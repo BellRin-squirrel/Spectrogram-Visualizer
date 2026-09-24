@@ -1,5 +1,5 @@
 import { DEFAULT_FRAME_WIDTH, DEFAULT_MIN_FREQ, DEFAULT_MAX_FREQ, KEYBOARD_WIDTH, LEFT_MARGIN, SPECTRUM_PANEL_WIDTH } from "./constants.js";
-import { AudioManager, encodeWAV } from "./audio.js";
+import { AudioManager, encodeWAV, detectPitchFromSpectrum } from "./audio.js";
 import { SpectrogramRenderer } from "./renderer.js";
 import {
   saveEditorToStorage, deleteEditorFromStorage,
@@ -8,19 +8,12 @@ import {
 
 // DOM 要素
 const statusText = document.getElementById("statusText");
-const centerLockBtn = document.getElementById("centerLockBtn");
 const spectrogramArea = document.getElementById("spectrogramArea");
 const canvas = document.getElementById("spectrogramCanvas");
 const scrollContainer = document.getElementById("scrollContainer");
 const scrollDummy = document.getElementById("scrollDummy");
 
-const fileTabBtn = document.getElementById("fileTabBtn");
-const fileMenuDropdown = document.getElementById("fileMenuDropdown");
 const editorListContainer = document.getElementById("editorListContainer");
-const editTabBtn = document.getElementById("editTabBtn");
-const editMenuDropdown = document.getElementById("editMenuDropdown");
-const viewTabBtn = document.getElementById("viewTabBtn");
-const viewMenuDropdown = document.getElementById("viewMenuDropdown");
 const actionToggleRecord = document.getElementById("actionToggleRecord");
 const actionSave = document.getElementById("actionSave");
 const actionSaveAs = document.getElementById("actionSaveAs");
@@ -29,7 +22,13 @@ const emptyOverlay = document.getElementById("emptyOverlay");
 const centerMicBtn = document.getElementById("centerMicBtn");
 const fileInput = document.getElementById("fileInput");
 
-// インスタンス化
+async function invokeTauri(cmd, args = {}) {
+  if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+    return await window.__TAURI__.core.invoke(cmd, args);
+  }
+  return null;
+}
+
 const audio = new AudioManager();
 const renderer = new SpectrogramRenderer(canvas);
 
@@ -39,11 +38,12 @@ class EditorSession {
     this.name = name || "無題の解析";
     this.history = [];
     this.historyTimes = [];
+    this.pitchHistory = [];
     this.pcmData = null;
     this.sampleRate = 44100;
     this.scrollX = 0;
     this.isNew = true;
-    this.fileHandle = null;
+    this.filePath = null;
   }
 }
 
@@ -51,7 +51,6 @@ let editors = [];
 let activeEditor = null;
 
 let frameWidth = DEFAULT_FRAME_WIDTH;
-let centerLock = true;
 let currentScrollX = 0;
 let targetScrollX = 0;
 let cssWidth = 0;
@@ -79,7 +78,7 @@ function renderView() {
   const containerClientW = scrollContainer.clientWidth || graphWidth;
   scrollDummy.style.width = `${containerClientW + maxScroll}px`;
 
-  if (centerLock) {
+  if (audio.isMicActive) {
     targetScrollX = maxScroll;
     currentScrollX = maxScroll;
     scrollContainer.scrollLeft = maxScroll;
@@ -93,7 +92,7 @@ function renderView() {
 
   renderer.render(
     cssWidth, cssHeight, dpr,
-    audio.history, currentScrollX, audio.getSampleRate(), audio.isPlaying,
+    audio.history, audio.pitchHistory, currentScrollX, audio.getSampleRate(), audio.isPlaying,
     frameWidth
   );
 
@@ -105,7 +104,7 @@ function renderView() {
 
   updateMenuState();
 
-  if (!centerLock && Math.abs(targetScrollX - currentScrollX) >= 0.1) {
+  if (Math.abs(targetScrollX - currentScrollX) >= 0.1) {
     requestAnimationFrame(renderView);
   }
 }
@@ -113,7 +112,7 @@ function renderView() {
 function updateMenuState() {
   if (!activeEditor) return;
 
-  if (activeEditor.fileHandle) {
+  if (activeEditor.filePath) {
     actionSave.classList.remove("disabled");
   } else {
     actionSave.classList.add("disabled");
@@ -149,12 +148,15 @@ async function persistCurrentEditor() {
   if (!activeEditor) return;
   activeEditor.history = audio.history;
   activeEditor.historyTimes = audio.historyTimes;
+  activeEditor.pitchHistory = audio.pitchHistory;
   activeEditor.scrollX = currentScrollX;
   activeEditor.sampleRate = audio.getSampleRate();
-  activeEditor.pcmData = getCurrentPcmSamples();
 
-  const dbData = { ...activeEditor, fileHandle: null };
-  await saveEditorToStorage(dbData);
+  if (!activeEditor.filePath) {
+    activeEditor.pcmData = getCurrentPcmSamples();
+  }
+
+  await saveEditorToStorage(activeEditor);
   await saveActiveEditorId(activeEditor.id);
   updateEditorListUI();
 }
@@ -168,12 +170,12 @@ async function switchEditor(editor) {
   activeEditor = editor;
   audio.history = editor.history || [];
   audio.historyTimes = editor.historyTimes || [];
+  audio.pitchHistory = editor.pitchHistory || [];
   audio.recordedPcmSamples = editor.pcmData ? [editor.pcmData] : [];
   audio.fullBuffer = null;
 
   currentScrollX = editor.scrollX || 0;
   targetScrollX = currentScrollX;
-  setCenterLock(false);
 
   await saveActiveEditorId(activeEditor.id);
   updateEditorListUI();
@@ -189,57 +191,48 @@ async function createNewEditor() {
   await switchEditor(newEd);
 }
 
+// アプリ内メニュー & OSネイティブメニューバーの双方へエディタ一覧を同期
 function updateEditorListUI() {
+  // 1. HTML側のドロップダウンメニューを更新
   editorListContainer.innerHTML = "";
   editors.forEach((ed) => {
     const item = document.createElement("div");
     item.className = "menu-dropdown-item editor-item" + (ed.id === activeEditor.id ? " active" : "");
     item.innerHTML = `<span class="check-mark">${ed.id === activeEditor.id ? "✓" : ""}</span><span class="editor-name">${ed.name}</span>`;
-    item.addEventListener("click", () => {
-      switchEditor(ed);
-    });
+    item.addEventListener("click", () => switchEditor(ed));
     editorListContainer.appendChild(item);
   });
+
+  // 2. Mac/Windowsのネイティブメニューバーへ同期
+  const payload = editors.map((e) => [e.id, e.name, e.id === activeEditor.id]);
+  invokeTauri("sync_editor_menu", { editors: payload });
 }
-
-// ファイルメニュー
-document.getElementById("actionNew").addEventListener("click", () => createNewEditor());
-
-document.getElementById("actionOpen").addEventListener("click", async () => {
-  if (window.showOpenFilePicker) {
-    try {
-      // 厳密に4形式のみ指定
-      const [handle] = await window.showOpenFilePicker({
-        types: [{
-          description: "対応音声ファイル (*.wav, *.flac, *.mp3, *.ogg)",
-          accept: {
-            "audio/wav": [".wav"],
-            "audio/flac": [".flac"],
-            "audio/mpeg": [".mp3"],
-            "audio/ogg": [".ogg"]
-          }
-        }],
-        excludeAcceptAllOption: true
-      });
-      const file = await handle.getFile();
-      if (isValidAudioFile(file.name)) {
-        await loadAudioIntoEditor(file, handle);
-      }
-      return;
-    } catch (err) {
-      if (err.name === "AbortError") return;
-    }
-  }
-  fileInput.click();
-});
 
 function isValidAudioFile(filename) {
   return /\.(wav|flac|mp3|ogg)$/i.test(filename);
 }
 
-// 上書き保存
-actionSave.addEventListener("click", async () => {
-  if (!activeEditor || !activeEditor.fileHandle) return;
+async function triggerOpenFile() {
+  try {
+    const res = await invokeTauri("open_audio_file");
+    if (res) {
+      const [filePath, fileName, bytes] = res;
+      const uint8 = new Uint8Array(bytes);
+      await loadAudioFromBuffer(uint8.buffer, fileName, filePath);
+      return;
+    } else if (res === null) {
+      return;
+    }
+  } catch (err) {
+    console.warn("Native dialog fallback:", err);
+  }
+
+  fileInput.value = "";
+  fileInput.click();
+}
+
+async function triggerSave() {
+  if (!activeEditor || !activeEditor.filePath) return;
   const pcm = getCurrentPcmSamples();
   if (!pcm) {
     statusText.textContent = "保存する音声データがありません";
@@ -249,18 +242,21 @@ actionSave.addEventListener("click", async () => {
   statusText.textContent = `上書き保存中: ${activeEditor.name}...`;
   try {
     const wavBlob = encodeWAV(pcm, audio.getSampleRate());
-    const writable = await activeEditor.fileHandle.createWritable();
-    await writable.write(wavBlob);
-    await writable.close();
+    const arrayBuffer = await wavBlob.arrayBuffer();
+    const uint8 = Array.from(new Uint8Array(arrayBuffer));
+
+    await invokeTauri("save_audio_file", {
+      path: activeEditor.filePath,
+      data: uint8
+    });
     statusText.textContent = `上書き保存完了: ${activeEditor.name}`;
   } catch (err) {
     console.error("保存失敗:", err);
     statusText.textContent = "上書き保存に失敗しました: " + err.message;
   }
-});
+}
 
-// 名前を付けて保存
-actionSaveAs.addEventListener("click", async () => {
+async function triggerSaveAs() {
   if (!activeEditor) return;
   const pcm = getCurrentPcmSamples();
   if (!pcm) {
@@ -268,43 +264,43 @@ actionSaveAs.addEventListener("click", async () => {
     return;
   }
 
-  const baseName = activeEditor.name.replace(/\.[^/.]+$/, "");
-  if (window.showSaveFilePicker) {
-    try {
-      const handle = await window.showSaveFilePicker({
-        suggestedName: `${baseName}.wav`,
-        types: [
-          { description: "WAV Audio (.wav)", accept: { "audio/wav": [".wav"] } },
-          { description: "FLAC Audio (.flac)", accept: { "audio/flac": [".flac"] } },
-          { description: "MP3 Audio (.mp3)", accept: { "audio/mp3": [".mp3"] } },
-          { description: "OGG Audio (.ogg)", accept: { "audio/ogg": [".ogg"] } }
-        ]
-      });
+  const baseName = activeEditor.name.replace(/\.[^/.]+$/, "") + ".wav";
+  statusText.textContent = "保存先を選択中...";
 
-      const wavBlob = encodeWAV(pcm, audio.getSampleRate());
-      const writable = await handle.createWritable();
-      await writable.write(wavBlob);
-      await writable.close();
+  try {
+    const wavBlob = encodeWAV(pcm, audio.getSampleRate());
+    const arrayBuffer = await wavBlob.arrayBuffer();
+    const uint8 = Array.from(new Uint8Array(arrayBuffer));
 
-      activeEditor.name = handle.name;
-      activeEditor.fileHandle = handle;
+    const res = await invokeTauri("save_audio_file_as", {
+      defaultName: baseName,
+      data: uint8
+    });
+
+    if (res) {
+      const [newPath, newName] = res;
+      activeEditor.filePath = newPath;
+      activeEditor.name = newName;
       await persistCurrentEditor();
-      statusText.textContent = `保存完了: ${handle.name}`;
+      statusText.textContent = `保存完了: ${newName}`;
       return;
-    } catch (err) {
-      if (err.name === "AbortError") return;
+    } else if (res === null) {
+      statusText.textContent = "保存をキャンセルしました";
+      return;
     }
+  } catch (err) {
+    console.warn("Native save fallback:", err);
   }
 
   const wavBlob = encodeWAV(pcm, audio.getSampleRate());
   const a = document.createElement("a");
   a.href = URL.createObjectURL(wavBlob);
-  a.download = `${baseName}.wav`;
+  a.download = baseName;
   a.click();
-  statusText.textContent = `ダウンロード保存しました: ${baseName}.wav`;
-});
+  statusText.textContent = `ダウンロード保存しました: ${baseName}`;
+}
 
-document.getElementById("actionClose").addEventListener("click", async () => {
+async function triggerCloseEditor() {
   if (!activeEditor) return;
   await deleteEditorFromStorage(activeEditor.id);
   editors = editors.filter((e) => e.id !== activeEditor.id);
@@ -313,11 +309,17 @@ document.getElementById("actionClose").addEventListener("click", async () => {
   } else {
     await createNewEditor();
   }
-});
+}
 
-// 表示メニュー (クリックしても閉じないズーム＆感度調整)
+document.getElementById("actionNew").addEventListener("click", () => createNewEditor());
+document.getElementById("actionOpen").addEventListener("click", () => triggerOpenFile());
+actionSave.addEventListener("click", () => triggerSave());
+actionSaveAs.addEventListener("click", () => triggerSaveAs());
+document.getElementById("actionClose").addEventListener("click", () => triggerCloseEditor());
+
 function attachKeepOpenAction(elementId, callback) {
   const el = document.getElementById(elementId);
+  if (!el) return;
   el.addEventListener("click", (e) => {
     e.stopPropagation();
     callback();
@@ -332,7 +334,6 @@ function zoomTime(factor) {
     const maxScroll = Math.max(0, (audio.history.length - 1) * frameWidth);
     targetScrollX = Math.max(0, Math.min(maxScroll, centerFrame * frameWidth));
     currentScrollX = targetScrollX;
-    if (centerLock) setCenterLock(false);
     renderView();
   }
 }
@@ -370,49 +371,123 @@ attachKeepOpenAction("actionResetZoom", () => {
   renderer.viewMinFreq = DEFAULT_MIN_FREQ;
   renderer.viewMaxFreq = DEFAULT_MAX_FREQ;
   renderer.colorGain = 1.0;
+  renderer.rebuildBakedLUT();
   renderView();
   statusText.textContent = "拡大縮小・感度を初期値にリセットしました";
 });
 
-// 編集メニュー: 録音
 actionToggleRecord.addEventListener("click", () => toggleRecording());
 
-async function loadAudioIntoEditor(file, handle = null) {
-  if (!isValidAudioFile(file.name)) {
-    statusText.textContent = "非対応の形式です (.wav, .flac, .mp3, .ogg のみ対応)";
-    return;
-  }
-  statusText.textContent = `高精度FFT解析中: ${file.name}...`;
+// Macネイティブメニューバーからのイベント受信
+if (window.__TAURI__ && window.__TAURI__.event) {
+  window.__TAURI__.event.listen("native-menu-event", (event) => {
+    const id = event.payload;
+    if (id === "menu_new") createNewEditor();
+    else if (id === "menu_open") triggerOpenFile();
+    else if (id === "menu_save") triggerSave();
+    else if (id === "menu_save_as") triggerSaveAs();
+    else if (id === "menu_close") triggerCloseEditor();
+    else if (id === "menu_toggle_record") toggleRecording();
+    else if (id === "menu_zoom_in_x") zoomTime(1.3);
+    else if (id === "menu_zoom_out_x") zoomTime(1 / 1.3);
+    else if (id === "menu_zoom_in_y") {
+      renderer.zoom(cssHeight / 2, -180, cssHeight);
+      renderView();
+    } else if (id === "menu_zoom_out_y") {
+      renderer.zoom(cssHeight / 2, 180, cssHeight);
+      renderView();
+    } else if (id === "menu_gain_up") {
+      const p = renderer.adjustColorGain(-150);
+      renderView();
+      statusText.textContent = `カラー感度: ${p}%`;
+    } else if (id === "menu_gain_down") {
+      const p = renderer.adjustColorGain(150);
+      renderView();
+      statusText.textContent = `カラー感度: ${p}%`;
+    } else if (id === "menu_reset_zoom") {
+      frameWidth = DEFAULT_FRAME_WIDTH;
+      renderer.viewMinFreq = DEFAULT_MIN_FREQ;
+      renderer.viewMaxFreq = DEFAULT_MAX_FREQ;
+      renderer.colorGain = 1.0;
+      renderer.rebuildBakedLUT();
+      renderView();
+      statusText.textContent = "リセットしました";
+    } else if (id.startsWith("select_editor:")) {
+      const targetId = id.replace("select_editor:", "");
+      const target = editors.find((e) => e.id === targetId);
+      if (target) switchEditor(target);
+    }
+  });
+}
+
+// 非同期チャンク解析
+async function loadAudioFromBuffer(arrayBuffer, fileName, filePath = null) {
+  statusText.textContent = `デコード中: ${fileName}...`;
+  audio.setupContext();
+
   try {
-    if (activeEditor && activeEditor.isNew && audio.history.length === 0) {
-      activeEditor.name = file.name;
+    audio.fullBuffer = await audio.ctx.decodeAudioData(arrayBuffer);
+    audio.history = [];
+    audio.historyTimes = [];
+    audio.pitchHistory = [];
+
+    const sampleRate = audio.fullBuffer.sampleRate;
+    const pcmData = audio.fullBuffer.getChannelData(0);
+    audio.recordedPcmSamples = [new Float32Array(pcmData)];
+
+    const transformer = new (await import("./fft.js")).FastFourierTransformer(4096);
+    const stepSamples = Math.round(sampleRate / 60);
+    const totalSteps = Math.floor((pcmData.length - 4096) / stepSamples);
+
+    const chunkSize = 250;
+    for (let f = 0; f < totalSteps; f += chunkSize) {
+      const end = Math.min(totalSteps, f + chunkSize);
+      for (let i = f; i < end; i++) {
+        const start = i * stepSamples;
+        const slice = pcmData.subarray(start, start + 4096);
+        const freqData = transformer.process(slice);
+        audio.history.push(freqData);
+        audio.historyTimes.push(start / sampleRate);
+
+        const pitch = detectPitchFromSpectrum(freqData, sampleRate);
+        audio.pitchHistory.push(pitch);
+      }
+
+      const percent = Math.round((end / totalSteps) * 100);
+      statusText.textContent = `高精度FFT解析中 (${fileName}): ${percent}%`;
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    if (activeEditor && activeEditor.isNew && audio.history.length > 0) {
+      activeEditor.name = fileName;
       activeEditor.isNew = false;
-      activeEditor.fileHandle = handle;
+      activeEditor.filePath = filePath;
     } else {
       await persistCurrentEditor();
-      const newEd = new EditorSession(null, file.name);
+      const newEd = new EditorSession(null, fileName);
       newEd.isNew = false;
-      newEd.fileHandle = handle;
+      newEd.filePath = filePath;
       editors.push(newEd);
       activeEditor = newEd;
     }
 
-    await audio.parseAudioFile(file);
     currentScrollX = 0;
     targetScrollX = 0;
-    setCenterLock(false);
     await persistCurrentEditor();
     renderView();
-    statusText.textContent = `解析完了: ${file.name} (Spaceキーで再生)`;
+    statusText.textContent = `解析完了: ${fileName} (Spaceキーで再生)`;
   } catch (err) {
-    console.error("ファイル読込失敗:", err);
-    statusText.textContent = "音声ファイルの解析に失敗しました: " + err.message;
+    console.error("解析失敗:", err);
+    statusText.textContent = "音声の解析に失敗しました: " + err.message;
   }
 }
 
 fileInput.addEventListener("change", async (e) => {
   const file = e.target.files[0];
-  if (file) await loadAudioIntoEditor(file, null);
+  if (file) {
+    const buffer = await file.arrayBuffer();
+    await loadAudioFromBuffer(buffer, file.name, null);
+  }
   fileInput.value = "";
 });
 
@@ -430,7 +505,6 @@ async function toggleRecording() {
 
   try {
     if (activeEditor) activeEditor.isNew = false;
-    setCenterLock(true);
     centerMicBtn.innerHTML = "⏹️ 録音停止";
     centerMicBtn.classList.add("recording");
     updateMenuState();
@@ -466,7 +540,6 @@ spectrogramArea.addEventListener("click", (e) => {
     const halfGraph = Math.floor(graphWidth / 2);
     const graphX = mouseX - LEFT_MARGIN;
 
-    if (centerLock) setCenterLock(false);
     if (audio.isPlaying) audio.stopPlayback();
 
     const maxScroll = Math.max(0, (audio.history.length - 1) * frameWidth);
@@ -513,13 +586,11 @@ spectrogramArea.addEventListener("wheel", (e) => {
       const newScroll = cursorFrame * frameWidth - (graphX - halfGraph);
       targetScrollX = Math.max(0, Math.min(newMaxScroll, newScroll));
       currentScrollX = targetScrollX;
-      if (centerLock) setCenterLock(false);
     }
     renderView();
     return;
   }
 
-  if (centerLock) setCenterLock(false);
   if (audio.isPlaying) audio.stopPlayback();
 
   const maxScroll = Math.max(0, (audio.history.length - 1) * frameWidth);
@@ -530,26 +601,11 @@ spectrogramArea.addEventListener("wheel", (e) => {
 }, { passive: false });
 
 scrollContainer.addEventListener("scroll", () => {
-  if (!centerLock && Math.abs(scrollContainer.scrollLeft - currentScrollX) > 2) {
+  if (Math.abs(scrollContainer.scrollLeft - currentScrollX) > 2) {
     targetScrollX = scrollContainer.scrollLeft;
     currentScrollX = targetScrollX;
     renderView();
   }
-});
-
-function setCenterLock(state) {
-  centerLock = state;
-  centerLockBtn.classList.toggle("active", centerLock);
-  centerLockBtn.textContent = centerLock ? "中央追従: ON" : "中央追従: OFF";
-}
-
-centerLockBtn.addEventListener("click", () => {
-  setCenterLock(!centerLock);
-  if (centerLock) {
-    targetScrollX = Math.max(0, (audio.history.length - 1) * frameWidth);
-    currentScrollX = targetScrollX;
-  }
-  renderView();
 });
 
 function getCenterTimeSec() {
@@ -584,7 +640,6 @@ window.addEventListener("keydown", (e) => {
         }
       );
       if (started) {
-        setCenterLock(false);
         statusText.textContent = `再生中: ${startSec.toFixed(2)}s 〜 (Spaceで一時停止)`;
       }
     }
@@ -601,10 +656,12 @@ async function initializeApp() {
       const ed = new EditorSession(d.id, d.name);
       ed.history = d.history || [];
       ed.historyTimes = d.historyTimes || [];
+      ed.pitchHistory = d.pitchHistory || [];
       ed.pcmData = d.pcmData || null;
       ed.sampleRate = d.sampleRate || 44100;
       ed.scrollX = d.scrollX || 0;
       ed.isNew = d.isNew !== undefined ? d.isNew : false;
+      ed.filePath = d.filePath || null;
       return ed;
     });
     const target = editors.find((e) => e.id === lastActiveId) || editors[0];
