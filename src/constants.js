@@ -1,9 +1,10 @@
 // レイアウトパラメータ (CSSピクセル単位)
 export const FFT_SIZE = 4096;
 export const DEFAULT_FRAME_WIDTH = 2;   // デフォルトの1スライス横幅 (px)
-export const KEYBOARD_WIDTH = 34;       // ピアノ鍵盤の幅
+export const KEYBOARD_WIDTH = 50;       // ピアノ鍵盤の幅 (広めに調整)
 export const AXIS_WIDTH = 54;           // 周波数目盛り幅
-export const LEFT_MARGIN = KEYBOARD_WIDTH + AXIS_WIDTH; // 88px
+export const LEFT_MARGIN = KEYBOARD_WIDTH + AXIS_WIDTH; // 104px
+export const SPECTRUM_PANEL_WIDTH = 160;// 右側スペクトル曲線グラフの幅 (px)
 
 // 周波数範囲パラメータ
 export const DATA_MIN_FREQ = 20;        // 描画対象データの下限 (20Hz)
@@ -17,7 +18,7 @@ export const DEFAULT_MAX_FREQ = 80000;  // デフォルト表示上限 (80kHz)
 export const COLOR_LUT_32 = new Uint32Array(256);
 (function initColorLUT() {
   const stops = [
-    { pos: 0.00, r: 8,   g: 10,  b: 38  }, // 濃紺 (ノイズ床)
+    { pos: 0.00, r: 8,   g: 10,  b: 38  }, // 濃紺
     { pos: 0.08, r: 12,  g: 25,  b: 85  },
     { pos: 0.18, r: 18,  g: 55,  b: 155 }, // 藍・青
     { pos: 0.30, r: 24,  g: 105, b: 215 },

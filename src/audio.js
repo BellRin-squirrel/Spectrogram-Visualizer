@@ -1,6 +1,40 @@
 import { FFT_SIZE } from "./constants.js";
 import { FastFourierTransformer } from "./fft.js";
 
+// PCM (Float32Array) を正規の 16bit WAV バイナリ (Blob) にエンコード
+export function encodeWAV(samples, sampleRate = 44100) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+
+  const writeString = (offset, str) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM format
+  view.setUint16(22, 1, true); // モノラル
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true); // 16-bit
+  writeString(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+
+  return new Blob([view], { type: "audio/wav" });
+}
+
 export class AudioManager {
   constructor() {
     this.ctx = null;
@@ -10,13 +44,11 @@ export class AudioManager {
     this.scriptNode = null;
     this.isMicActive = false;
 
-    // 音声データ
-    this.history = [];      // 各フレームの周波数データ (Uint8Array[])
-    this.historyTimes = []; // 各フレームのタイムスタンプ (秒[])
+    this.history = [];
+    this.historyTimes = [];
     this.recordedPcmSamples = [];
     this.fullBuffer = null;
 
-    // 再生状態
     this.activeSource = null;
     this.isPlaying = false;
     this.playStartCtxTime = 0;
@@ -41,7 +73,57 @@ export class AudioManager {
     return this.ctx ? this.ctx.sampleRate : 44100;
   }
 
-  // マイク録音の開始
+  playPianoNote(freq) {
+    this.setupContext();
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+
+    const masterGain = ctx.createGain();
+    masterGain.gain.setValueAtTime(0.32, now);
+    masterGain.connect(ctx.destination);
+
+    const hammer = ctx.createOscillator();
+    const hammerGain = ctx.createGain();
+    hammer.type = "triangle";
+    hammer.frequency.setValueAtTime(Math.min(2000, freq * 0.7), now);
+    hammerGain.gain.setValueAtTime(0.35, now);
+    hammerGain.gain.exponentialRampToValueAtTime(0.001, now + 0.025);
+    hammer.connect(hammerGain);
+    hammerGain.connect(masterGain);
+    hammer.start(now);
+    hammer.stop(now + 0.03);
+
+    const harmonics = [
+      [1.0, 1.0, 1.0],
+      [2.0, 0.45, 0.75],
+      [3.0, 0.22, 0.55],
+      [4.0, 0.12, 0.38],
+      [5.0, 0.06, 0.25],
+      [6.0, 0.03, 0.18],
+    ];
+
+    harmonics.forEach(([mult, amp, decayRatio]) => {
+      const hFreq = freq * mult;
+      if (hFreq > 20000) return;
+
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(hFreq, now);
+
+      const decayTime = Math.max(0.35, Math.min(3.2, (1100 / freq) * decayRatio));
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.linearRampToValueAtTime(amp, now + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + decayTime);
+
+      osc.connect(g);
+      g.connect(masterGain);
+
+      osc.start(now);
+      osc.stop(now + decayTime + 0.05);
+    });
+  }
+
   async startMic(onProcessFrame) {
     this.setupContext();
     this.stopPlayback();
@@ -79,7 +161,6 @@ export class AudioManager {
     requestAnimationFrame(loop);
   }
 
-  // マイク録音の停止
   stopMic() {
     if (this.micStream) this.micStream.getTracks().forEach((t) => t.stop());
     if (this.scriptNode) {
@@ -104,7 +185,6 @@ export class AudioManager {
     return buffer;
   }
 
-  // 指定秒数からの再生
   startPlayback(startSec, onUpdate, onEnd) {
     this.setupContext();
 
@@ -160,7 +240,6 @@ export class AudioManager {
     this.isPlaying = false;
   }
 
-  // 音声ファイルの解析
   async parseAudioFile(file) {
     this.setupContext();
     this.stopPlayback();
@@ -174,8 +253,9 @@ export class AudioManager {
 
     const sampleRate = this.fullBuffer.sampleRate;
     const pcmData = this.fullBuffer.getChannelData(0);
-    const transformer = new FastFourierTransformer(FFT_SIZE);
+    this.recordedPcmSamples = [new Float32Array(pcmData)];
 
+    const transformer = new FastFourierTransformer(FFT_SIZE);
     const stepSamples = Math.round(sampleRate / 60);
     const totalSteps = Math.floor((pcmData.length - FFT_SIZE) / stepSamples);
 

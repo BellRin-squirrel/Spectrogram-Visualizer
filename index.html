@@ -9,29 +9,73 @@
   <body>
     <div class="container">
       <header>
-        <h1>Spectrogram Visualizer</h1>
+        <div class="header-left">
+          <h1>Spectrogram Visualizer</h1>
+          <!-- アプリケーションメニューバー -->
+          <nav class="app-menu-bar" id="appMenuBar">
+            <!-- ファイルタブ -->
+            <div class="menu-tab-wrapper">
+              <button class="menu-tab-btn" id="fileTabBtn">ファイル</button>
+              <div class="menu-dropdown" id="fileMenuDropdown" style="display: none;">
+                <div class="menu-dropdown-item" id="actionNew">新しい音声解析</div>
+                <div class="menu-dropdown-item" id="actionOpen">ファイルを開く</div>
+                <div class="menu-dropdown-item disabled" id="actionSave">保存 (上書き)</div>
+                <div class="menu-dropdown-item disabled" id="actionSaveAs">名前を付けて保存...</div>
+                <div class="menu-dropdown-item" id="actionClose">エディタを閉じる</div>
+                <div class="menu-dropdown-divider"></div>
+                <div class="menu-dropdown-header">開いているエディタ</div>
+                <div id="editorListContainer"></div>
+              </div>
+            </div>
+
+            <!-- 編集タブ (録音) -->
+            <div class="menu-tab-wrapper">
+              <button class="menu-tab-btn" id="editTabBtn">編集</button>
+              <div class="menu-dropdown" id="editMenuDropdown" style="display: none;">
+                <div class="menu-dropdown-item" id="actionToggleRecord">マイク録音 開始</div>
+              </div>
+            </div>
+
+            <!-- 表示タブ (拡大縮小 & カラー感度) -->
+            <div class="menu-tab-wrapper">
+              <button class="menu-tab-btn" id="viewTabBtn">表示</button>
+              <div class="menu-dropdown" id="viewMenuDropdown" style="display: none;">
+                <div class="menu-dropdown-header">時間軸 (横方向)</div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomInX">時間軸を拡大 (ズームイン) <span>🔍+</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomOutX">時間軸を縮小 (ズームアウト) <span>🔍-</span></div>
+                <div class="menu-dropdown-divider"></div>
+                <div class="menu-dropdown-header">周波数軸 (縦方向)</div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomInY">周波数軸を拡大 (ズームイン) <span>↕+</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomOutY">周波数軸を縮小 (ズームアウト) <span>↕-</span></div>
+                <div class="menu-dropdown-divider"></div>
+                <div class="menu-dropdown-header">カラー感度 (色の濃淡)</div>
+                <div class="menu-dropdown-item keep-open" id="actionGainUp">カラー感度を上げる (濃くする) <span>🎨+</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionGainDown">カラー感度を下げる (薄くする) <span>🎨-</span></div>
+                <div class="menu-dropdown-divider"></div>
+                <div class="menu-dropdown-item keep-open" id="actionResetZoom">拡大縮小・感度をリセット</div>
+              </div>
+            </div>
+          </nav>
+        </div>
+
         <div class="controls">
-          <button id="micBtn" class="btn primary">マイク録音 開始</button>
-          <label class="btn secondary file-label">
-            音声ファイル読込
-            <input type="file" id="fileInput" accept="audio/*" />
-          </label>
           <button id="centerLockBtn" class="btn active-toggle active">中央追従: ON</button>
-          <button id="clearBtn" class="btn secondary">クリア</button>
-          <div class="audio-control-wrapper" id="audioCtrlWrapper" style="display: none;">
-            <audio id="audioElement" controls></audio>
-          </div>
+          <!-- 厳密に4形式のみ指定 -->
+          <input type="file" id="fileInput" accept=".wav,.flac,.mp3,.ogg" style="display: none;" />
         </div>
       </header>
 
       <main>
         <div class="spectrogram-area" id="spectrogramArea">
           <canvas id="spectrogramCanvas"></canvas>
+          <div class="empty-overlay" id="emptyOverlay" style="display: none;">
+            <button class="center-mic-btn" id="centerMicBtn">🎙️ マイク録音開始</button>
+          </div>
         </div>
         <div class="scroll-container" id="scrollContainer">
           <div class="scroll-dummy" id="scrollDummy"></div>
         </div>
-        <div class="status-bar" id="statusText">待機中 (マイクまたはファイルを選択してください)</div>
+        <div class="status-bar" id="statusText">待機中</div>
       </main>
     </div>
 
