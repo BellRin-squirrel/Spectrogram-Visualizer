@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Spectrogram Visualizer</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>Spectrogram Visualizer</h1>
+        <div class="controls">
+          <button id="micBtn" class="btn primary">マイク録音 開始</button>
+          <label class="btn secondary file-label">
+            音声ファイル読込
+            <input type="file" id="fileInput" accept="audio/*" />
+          </label>
+          <button id="autoScrollBtn" class="btn active-toggle active">追従: ON</button>
+          <button id="clearBtn" class="btn secondary">クリア</button>
+          <div class="audio-control-wrapper" id="audioCtrlWrapper" style="display: none;">
+            <audio id="audioElement" controls></audio>
+          </div>
+        </div>
+      </header>
+
+      <main>
+        <div class="spectrogram-area" id="spectrogramArea">
+          <!-- スペクトログラムと周波数軸を描画するメインCanvas -->
+          <canvas id="spectrogramCanvas"></canvas>
+        </div>
+        <!-- 横スクロール用バー -->
+        <div class="scroll-container" id="scrollContainer">
+          <div class="scroll-dummy" id="scrollDummy"></div>
+        </div>
+        <div class="status-bar" id="statusText">待機中 (マイクまたはファイルを選択してください)</div>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
