@@ -16,8 +16,8 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 16px;
-  gap: 12px;
+  padding: 14px 16px;
+  gap: 10px;
 }
 
 header {
@@ -104,7 +104,7 @@ main {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-height: 0;
 }
 
@@ -124,9 +124,8 @@ canvas {
   height: 100%;
 }
 
-/* スクロールバー用コンテナ */
 .scroll-container {
-  height: 16px;
+  height: 14px;
   overflow-x: scroll;
   overflow-y: hidden;
   background: #18181b;
@@ -136,7 +135,7 @@ canvas {
 }
 
 .scroll-container::-webkit-scrollbar {
-  height: 12px;
+  height: 10px;
 }
 
 .scroll-container::-webkit-scrollbar-track {
@@ -145,7 +144,7 @@ canvas {
 
 .scroll-container::-webkit-scrollbar-thumb {
   background: #3e3e46;
-  border-radius: 6px;
+  border-radius: 5px;
 }
 
 .scroll-container::-webkit-scrollbar-thumb:hover {
@@ -159,5 +158,5 @@ canvas {
 .status-bar {
   font-size: 0.8rem;
   color: #8d8d99;
-  padding: 2px 6px;
+  padding: 2px 4px;
 }
