@@ -1,5 +1,5 @@
 [package]
-name = "spectrogram-app"
+name = "Spectrogram-Visualizer"
 version = "0.1.0"
 description = "Spectrogram Visualizer in Tauri"
 authors = ["BellRin"]
