@@ -14,11 +14,11 @@ export class SpectrogramRenderer {
     this.viewMaxFreq = DEFAULT_MAX_FREQ;
     this.baseGain = 1.47;
     this.colorGain = 1.0;
+    this.spectrumProfileScale = 1.0; // 右側波形の左右方向の縮尺 (1.0 = 100%)
 
     this.bakedColorLUT = new Uint32Array(256);
     this.rebuildBakedLUT();
 
-    // メモリ確保とGCをゼロにするためのキャッシュバッファ
     this.cachedImgData = null;
     this.cachedImgW = 0;
     this.cachedImgH = 0;
@@ -95,6 +95,13 @@ export class SpectrogramRenderer {
     return Math.round(this.colorGain * 100);
   }
 
+  // 右側波形グラフの左右縮尺を調整 (0.2x 〜 5.0x)
+  adjustProfileScale(deltaY) {
+    const factor = Math.pow(1.002, -deltaY);
+    this.spectrumProfileScale = Math.max(0.2, Math.min(5.0, this.spectrumProfileScale * factor));
+    return Math.round(this.spectrumProfileScale * 100);
+  }
+
   render(cssWidth, cssHeight, dpr, audioHistory, pitchHistory, currentScrollX, sampleRate, isPlaying, frameWidth = 2) {
     const graphWidth = Math.floor(cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH);
     if (graphWidth <= 0 || cssHeight <= 0) return;
@@ -103,7 +110,6 @@ export class SpectrogramRenderer {
     const imgW = graphWidth;
     const imgH = cssHeight;
 
-    // バッファ再利用（毎フレームのメモリ生成を抑制）
     if (!this.cachedImgData || this.cachedImgW !== imgW || this.cachedImgH !== imgH) {
       this.cachedImgW = imgW;
       this.cachedImgH = imgH;
@@ -176,7 +182,6 @@ export class SpectrogramRenderer {
     this.drawAxis(cssHeight, graphWidth);
     this.drawDataBoundaries(cssHeight, graphWidth);
 
-    // 基音の折れ線描画 (高速1パス描画)
     this.drawPitchTrack(cssHeight, graphWidth, halfGraph, pitchHistory, currentScrollX, frameWidth);
 
     // センターライン
@@ -188,16 +193,15 @@ export class SpectrogramRenderer {
     this.ctx.lineTo(activeLineX, cssHeight);
     this.ctx.stroke();
 
-    // 右側スペクトル曲線グラフ
+    // 右側スペクトル曲線グラフ (倍音ピーク精密スナップ描画)
     const centerFrame = Math.round(currentScrollX / frameWidth);
     const activeSpectrum = (centerFrame >= 0 && centerFrame < totalFrames) ? audioHistory[centerFrame] : null;
     const centerPitch = (centerFrame >= 0 && centerFrame < pitchHistory.length) ? pitchHistory[centerFrame] : null;
-    this.drawSpectrumProfile(cssWidth, cssHeight, activeSpectrum, sampleMap, imgH, centerPitch);
+    this.drawSpectrumProfile(cssWidth, cssHeight, activeSpectrum, sampleMap, imgH, centerPitch, sampleRate);
 
     this.ctx.restore();
   }
 
-  // ループ内でのstroke()を完全撤廃し、1回のstroke()で全フレームを描画 (超高速化)
   drawPitchTrack(h, graphW, halfGraph, pitchHistory, currentScrollX, frameWidth) {
     if (!pitchHistory || pitchHistory.length === 0) return;
 
@@ -235,7 +239,6 @@ export class SpectrogramRenderer {
         prevFreq = null;
       }
     }
-    // ループの外で1回だけストロークを実行
     this.ctx.stroke();
     this.ctx.restore();
   }
@@ -377,7 +380,8 @@ export class SpectrogramRenderer {
     this.ctx.stroke();
   }
 
-  drawSpectrumProfile(totalW, h, activeSpectrum, sampleMap, imgH, fundamentalPitch) {
+  // 右側スペクトル曲線グラフ (倍音ピークスナップ ＆ 左右縮尺対応)
+  drawSpectrumProfile(totalW, h, activeSpectrum, sampleMap, imgH, fundamentalPitch, sampleRate) {
     const panelX = totalW - SPECTRUM_PANEL_WIDTH;
 
     this.ctx.fillStyle = "rgba(16, 18, 24, 0.96)";
@@ -399,6 +403,8 @@ export class SpectrogramRenderer {
 
     const points = [];
     const step = 3;
+    const scaleFactor = this.spectrumProfileScale; // 左右方向の縮尺
+
     for (let py = 0; py < imgH; py += step) {
       const smp = sampleMap[py];
       const y = py / (imgH / h);
@@ -408,7 +414,7 @@ export class SpectrogramRenderer {
       }
 
       const val = activeSpectrum[smp.b0] * (1 - smp.frac) + activeSpectrum[smp.b1] * smp.frac;
-      const normalized = Math.min(1, (val * this.baseGain * this.colorGain) / 255);
+      const normalized = Math.min(1, ((val * this.baseGain * this.colorGain) / 255) * scaleFactor);
       const x = panelX + normalized * (SPECTRUM_PANEL_WIDTH - 28);
       points.push({ x, y });
     }
@@ -435,35 +441,50 @@ export class SpectrogramRenderer {
       this.ctx.stroke();
     }
 
+    // 倍音 (H1, H2, H3...) の局所ピーク自動探索（山の頂上へスナップ）
     if (fundamentalPitch && fundamentalPitch > 0) {
+      const nyquist = sampleRate / 2;
+      const bufLen = activeSpectrum.length;
+
       for (let k = 1; k <= 16; k++) {
-        const hFreq = fundamentalPitch * k;
-        if (hFreq > this.viewMaxFreq || hFreq > DATA_MAX_FREQ) break;
-        if (hFreq < this.viewMinFreq) continue;
+        const targetFreq = fundamentalPitch * k;
+        if (targetFreq > this.viewMaxFreq || targetFreq > DATA_MAX_FREQ) break;
+        if (targetFreq < this.viewMinFreq) continue;
 
-        const y = this.freqToY(hFreq, h);
-        if (y < 16 || y > h - 4) continue;
+        // 理論周波数の近傍 ±7% から実際のスペクトルの山（最大ピーク）を特定
+        const centerBin = (targetFreq / nyquist) * bufLen;
+        const bMin = Math.max(1, Math.round(centerBin * 0.93));
+        const bMax = Math.min(bufLen - 2, Math.round(centerBin * 1.07));
 
-        const exactRatio = (Math.log10(hFreq) - Math.log10(this.viewMinFreq)) / (Math.log10(this.viewMaxFreq) - Math.log10(this.viewMinFreq));
-        const py = Math.max(0, Math.min(imgH - 1, Math.round((1 - exactRatio) * (imgH - 1))));
-        const smp = sampleMap[py];
-        let val = 0;
-        if (smp && !smp.isOutOfRange) {
-          val = activeSpectrum[smp.b0] * (1 - smp.frac) + activeSpectrum[smp.b1] * smp.frac;
+        let maxV = -1;
+        let peakB = -1;
+        for (let b = bMin; b <= bMax; b++) {
+          if (activeSpectrum[b] > maxV) {
+            maxV = activeSpectrum[b];
+            peakB = b;
+          }
         }
-        const normalized = Math.min(1, (val * this.baseGain * this.colorGain) / 255);
-        const dotX = panelX + normalized * (SPECTRUM_PANEL_WIDTH - 28);
 
-        this.ctx.fillStyle = k === 1 ? "#ffd700" : "#00e5ff";
-        this.ctx.beginPath();
-        this.ctx.arc(dotX, y, k === 1 ? 3 : 2, 0, Math.PI * 2);
-        this.ctx.fill();
+        // 有効な山が存在する場合にスナップ
+        if (peakB > 0 && maxV > 20) {
+          const exactFreq = (peakB / bufLen) * nyquist;
+          const y = this.freqToY(exactFreq, h);
+          if (y < 16 || y > h - 4) continue;
 
-        this.ctx.fillStyle = k === 1 ? "#ffd700" : "#a1a1aa";
-        this.ctx.font = k === 1 ? "bold 9px ui-monospace, sans-serif" : "8px ui-monospace, sans-serif";
-        this.ctx.textAlign = "left";
-        this.ctx.textBaseline = "middle";
-        this.ctx.fillText(`H${k}`, Math.min(panelX + SPECTRUM_PANEL_WIDTH - 24, dotX + 5), y);
+          const normalized = Math.min(1, ((maxV * this.baseGain * this.colorGain) / 255) * scaleFactor);
+          const dotX = panelX + normalized * (SPECTRUM_PANEL_WIDTH - 28);
+
+          this.ctx.fillStyle = k === 1 ? "#ffd700" : "#00e5ff";
+          this.ctx.beginPath();
+          this.ctx.arc(dotX, y, k === 1 ? 3.2 : 2.2, 0, Math.PI * 2);
+          this.ctx.fill();
+
+          this.ctx.fillStyle = k === 1 ? "#ffd700" : "#a1a1aa";
+          this.ctx.font = k === 1 ? "bold 9px ui-monospace, sans-serif" : "8px ui-monospace, sans-serif";
+          this.ctx.textAlign = "left";
+          this.ctx.textBaseline = "middle";
+          this.ctx.fillText(`H${k}`, Math.min(panelX + SPECTRUM_PANEL_WIDTH - 24, dotX + 5), y);
+        }
       }
     }
   }

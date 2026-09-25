@@ -212,9 +212,8 @@ async function createNewEditor() {
   await switchEditor(newEd);
 }
 
-// アプリ内メニュー & OSネイティブメニューバーの双方へエディタ一覧を同期
+// アプリ内メニューのエディタ一覧を更新
 function updateEditorListUI() {
-  // 1. HTML側のドロップダウンメニューを更新
   editorListContainer.innerHTML = "";
   editors.forEach((ed) => {
     const item = document.createElement("div");
@@ -223,9 +222,6 @@ function updateEditorListUI() {
     item.addEventListener("click", () => switchEditor(ed));
     editorListContainer.appendChild(item);
   });
-
-  const payload = editors.map((e) => [e.id, e.name, e.id === activeEditor.id]);
-  invokeTauri("sync_editor_menu", { editors: payload });
 }
 
 function isValidAudioFile(filename) {
@@ -323,12 +319,34 @@ async function triggerSaveAs() {
 
 async function triggerCloseEditor() {
   if (!activeEditor) return;
-  await deleteEditorFromStorage(activeEditor.id);
-  editors = editors.filter((e) => e.id !== activeEditor.id);
+
+  const confirmed = confirm(`「${activeEditor.name}」を閉じますか？\n保存されていないデータは破棄されます。`);
+  if (!confirmed) return;
+
+  if (audio.isMicActive) audio.stopMic();
+  if (audio.isPlaying) audio.stopPlayback();
+
+  const closingId = activeEditor.id;
+  await deleteEditorFromStorage(closingId);
+
+  editors = editors.filter((e) => e.id !== closingId);
+
   if (editors.length > 0) {
-    await switchEditor(editors[0]);
+    activeEditor = editors[0];
+    await switchEditor(activeEditor);
   } else {
-    await createNewEditor();
+    audio.clear();
+    const newEd = new EditorSession(null, "無題の解析 1");
+    editors = [newEd];
+    activeEditor = newEd;
+    currentScrollX = 0;
+    targetScrollX = 0;
+    await saveEditorToStorage(newEd);
+    await saveActiveEditorId(newEd.id);
+    updateEditorListUI();
+    updateMenuState();
+    renderView();
+    statusText.textContent = "すべてのエディタを閉じました";
   }
 }
 
@@ -398,47 +416,6 @@ attachKeepOpenAction("actionResetZoom", () => {
 });
 
 actionToggleRecord.addEventListener("click", () => toggleRecording());
-
-if (window.__TAURI__ && window.__TAURI__.event) {
-  window.__TAURI__.event.listen("native-menu-event", (event) => {
-    const id = event.payload;
-    if (id === "menu_new") createNewEditor();
-    else if (id === "menu_open") triggerOpenFile();
-    else if (id === "menu_save") triggerSave();
-    else if (id === "menu_save_as") triggerSaveAs();
-    else if (id === "menu_close") triggerCloseEditor();
-    else if (id === "menu_toggle_record") toggleRecording();
-    else if (id === "menu_zoom_in_x") zoomTime(1.3);
-    else if (id === "menu_zoom_out_x") zoomTime(1 / 1.3);
-    else if (id === "menu_zoom_in_y") {
-      renderer.zoom(cssHeight / 2, -180, cssHeight);
-      renderView();
-    } else if (id === "menu_zoom_out_y") {
-      renderer.zoom(cssHeight / 2, 180, cssHeight);
-      renderView();
-    } else if (id === "menu_gain_up") {
-      const p = renderer.adjustColorGain(-150);
-      renderView();
-      statusText.textContent = `カラー感度: ${p}%`;
-    } else if (id === "menu_gain_down") {
-      const p = renderer.adjustColorGain(150);
-      renderView();
-      statusText.textContent = `カラー感度: ${p}%`;
-    } else if (id === "menu_reset_zoom") {
-      frameWidth = DEFAULT_FRAME_WIDTH;
-      renderer.viewMinFreq = DEFAULT_MIN_FREQ;
-      renderer.viewMaxFreq = DEFAULT_MAX_FREQ;
-      renderer.colorGain = 1.0;
-      renderer.rebuildBakedLUT();
-      renderView();
-      statusText.textContent = "リセットしました";
-    } else if (id.startsWith("select_editor:")) {
-      const targetId = id.replace("select_editor:", "");
-      const target = editors.find((e) => e.id === targetId);
-      if (target) switchEditor(target);
-    }
-  });
-}
 
 // 非同期解析
 async function loadAudioFromBuffer(arrayBuffer, fileName, filePath = null) {
@@ -589,6 +566,15 @@ spectrogramArea.addEventListener("wheel", (e) => {
     }
     renderView();
     return;
+  }
+
+  if (mouseX >= cssWidth - SPECTRUM_PANEL_WIDTH) {
+    if (e.ctrlKey || e.metaKey) {
+      const percent = renderer.adjustProfileScale(e.deltaY);
+      renderView();
+      statusText.textContent = `スペクトル波形縮尺: ${percent}%`;
+      return;
+    }
   }
 
   const graphWidth = cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH;

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Spectrogram Visualizer</title>
+    <script type="module" crossorigin src="/assets/index-A97S6y0D.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BWrgIgZo.css">
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div class="header-left">
+          <h1>Spectrogram Visualizer</h1>
+          <!-- アプリケーションメニューバー -->
+          <nav class="app-menu-bar" id="appMenuBar">
+            <!-- ファイルタブ -->
+            <div class="menu-tab-wrapper">
+              <button class="menu-tab-btn" id="fileTabBtn">ファイル</button>
+              <div class="menu-dropdown" id="fileMenuDropdown" style="display: none;">
+                <div class="menu-dropdown-item" id="actionNew">新しい音声解析</div>
+                <div class="menu-dropdown-item" id="actionOpen">ファイルを開く</div>
+                <div class="menu-dropdown-item disabled" id="actionSave">保存 (上書き)</div>
+                <div class="menu-dropdown-item disabled" id="actionSaveAs">名前を付けて保存...</div>
+                <div class="menu-dropdown-item" id="actionClose">エディタを閉じる</div>
+                <div class="menu-dropdown-divider"></div>
+                <div class="menu-dropdown-header">開いているエディタ</div>
+                <div id="editorListContainer"></div>
+              </div>
+            </div>
+
+            <!-- 編集タブ -->
+            <div class="menu-tab-wrapper">
+              <button class="menu-tab-btn" id="editTabBtn">編集</button>
+              <div class="menu-dropdown" id="editMenuDropdown" style="display: none;">
+                <div class="menu-dropdown-item" id="actionToggleRecord">マイク録音 開始</div>
+              </div>
+            </div>
+
+            <!-- 表示タブ -->
+            <div class="menu-tab-wrapper">
+              <button class="menu-tab-btn" id="viewTabBtn">表示</button>
+              <div class="menu-dropdown" id="viewMenuDropdown" style="display: none;">
+                <div class="menu-dropdown-header">時間軸 (横方向)</div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomInX">時間軸を拡大 (ズームイン) <span>🔍+</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomOutX">時間軸を縮小 (ズームアウト) <span>🔍-</span></div>
+                <div class="menu-dropdown-divider"></div>
+                <div class="menu-dropdown-header">周波数軸 (縦方向)</div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomInY">周波数軸を拡大 (ズームイン) <span>↕+</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomOutY">周波数軸を縮小 (ズームアウト) <span>↕-</span></div>
+                <div class="menu-dropdown-divider"></div>
+                <div class="menu-dropdown-header">カラー感度 (色の濃淡)</div>
+                <div class="menu-dropdown-item keep-open" id="actionGainUp">カラー感度を上げる (濃くする) <span>🎨+</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionGainDown">カラー感度を下げる (薄くする) <span>🎨-</span></div>
+                <div class="menu-dropdown-divider"></div>
+                <div class="menu-dropdown-item keep-open" id="actionResetZoom">拡大縮小・感度をリセット</div>
+              </div>
+            </div>
+          </nav>
+        </div>
+
+        <!-- macOSでブロックされないオフスクリーンファイル入力要素 -->
+        <input 
+          type="file" 
+          id="fileInput" 
+          accept=".wav,.flac,.mp3,.ogg" 
+          style="position: absolute; top: -9999px; left: -9999px; width: 1px; height: 1px; opacity: 0; pointer-events: none;" 
+        />
+      </header>
+
+      <main>
+        <div class="spectrogram-area" id="spectrogramArea">
+          <canvas id="spectrogramCanvas"></canvas>
+          <div class="empty-overlay" id="emptyOverlay" style="display: none;">
+            <button class="center-mic-btn" id="centerMicBtn">🎙️ マイク録音開始</button>
+          </div>
+        </div>
+        <div class="scroll-container" id="scrollContainer">
+          <div class="scroll-dummy" id="scrollDummy"></div>
+        </div>
+        <div class="status-bar" id="statusText">待機中</div>
+      </main>
+    </div>
+
+  </body>
+</html>
