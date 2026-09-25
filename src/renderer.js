@@ -9,11 +9,29 @@ const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", 
 export class SpectrogramRenderer {
   constructor(canvas) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext("2d");
+    this.ctx = canvas.getContext("2d", { alpha: false });
     this.viewMinFreq = DEFAULT_MIN_FREQ;
     this.viewMaxFreq = DEFAULT_MAX_FREQ;
     this.baseGain = 1.47;
     this.colorGain = 1.0;
+
+    this.bakedColorLUT = new Uint32Array(256);
+    this.rebuildBakedLUT();
+
+    // メモリ確保とGCをゼロにするためのキャッシュバッファ
+    this.cachedImgData = null;
+    this.cachedImgW = 0;
+    this.cachedImgH = 0;
+    this.offCanvas = document.createElement("canvas");
+    this.offCtx = this.offCanvas.getContext("2d");
+  }
+
+  rebuildBakedLUT() {
+    const effectiveGain = this.baseGain * this.colorGain;
+    for (let i = 0; i < 256; i++) {
+      const adjusted = Math.max(0, Math.min(255, Math.round(i * effectiveGain)));
+      this.bakedColorLUT[i] = COLOR_LUT_32[adjusted];
+    }
   }
 
   freqToY(freq, h) {
@@ -73,71 +91,36 @@ export class SpectrogramRenderer {
   adjustColorGain(deltaY) {
     const factor = Math.pow(1.002, -deltaY);
     this.colorGain = Math.max(0.2, Math.min(4.0, this.colorGain * factor));
+    this.rebuildBakedLUT();
     return Math.round(this.colorGain * 100);
   }
 
-  // 高速かつ正確な基音 (F0) の検出 (HPS + 放物線補間)
-  detectPitch(frameData, sampleRate) {
-    if (!frameData) return null;
-    const nyquist = sampleRate / 2;
-    const bufferLength = frameData.length;
-
-    const bMin = Math.max(2, Math.round((50 / nyquist) * bufferLength));
-    const bMax = Math.min(bufferLength - 1, Math.round((2000 / nyquist) * bufferLength));
-
-    let maxMag = 0;
-    for (let b = bMin; b <= bMax; b++) {
-      if (frameData[b] > maxMag) maxMag = frameData[b];
-    }
-    if (maxMag < 38) return null; // 無音判定
-
-    let bestBin = -1;
-    let bestScore = -1;
-
-    for (let b = bMin; b <= Math.floor(bMax / 2); b++) {
-      const v1 = frameData[b];
-      const v2 = frameData[b * 2] || 0;
-      const v3 = frameData[b * 3] || 0;
-      const score = v1 * 1.0 + v2 * 0.65 + v3 * 0.4;
-
-      if (score > bestScore && v1 > 35) {
-        bestScore = score;
-        bestBin = b;
-      }
-    }
-
-    if (bestBin <= 0) return null;
-
-    // 放物線補間で周波数のピークを精密化
-    const y1 = frameData[bestBin - 1] || frameData[bestBin];
-    const y2 = frameData[bestBin];
-    const y3 = frameData[bestBin + 1] || frameData[bestBin];
-    const denom = 2 * (2 * y2 - y1 - y3);
-    const delta = denom !== 0 ? (y1 - y3) / denom : 0;
-    const exactBin = bestBin + Math.max(-0.5, Math.min(0.5, delta));
-
-    return (exactBin / bufferLength) * nyquist;
-  }
-
-  render(cssWidth, cssHeight, dpr, audioHistory, currentScrollX, sampleRate, isPlaying, frameWidth = 2) {
-    const graphWidth = cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH;
+  render(cssWidth, cssHeight, dpr, audioHistory, pitchHistory, currentScrollX, sampleRate, isPlaying, frameWidth = 2) {
+    const graphWidth = Math.floor(cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH);
     if (graphWidth <= 0 || cssHeight <= 0) return;
 
     const halfGraph = Math.floor(graphWidth / 2);
-    const physGraphW = Math.round(graphWidth * dpr);
-    const physH = this.canvas.height;
-    const physLeftMargin = Math.round(LEFT_MARGIN * dpr);
+    const imgW = graphWidth;
+    const imgH = cssHeight;
 
-    const imgData = this.ctx.createImageData(physGraphW, physH);
-    const data32 = new Uint32Array(imgData.data.buffer);
+    // バッファ再利用（毎フレームのメモリ生成を抑制）
+    if (!this.cachedImgData || this.cachedImgW !== imgW || this.cachedImgH !== imgH) {
+      this.cachedImgW = imgW;
+      this.cachedImgH = imgH;
+      this.cachedImgData = this.ctx.createImageData(imgW, imgH);
+      this.offCanvas.width = imgW;
+      this.offCanvas.height = imgH;
+    }
+
+    const data32 = new Uint32Array(this.cachedImgData.data.buffer);
     data32.fill(0xff0d0906);
 
     const nyquist = sampleRate / 2;
     const bufferLength = FFT_SIZE / 2;
 
-    const sampleMap = new Array(physH);
-    for (let py = 0; py < physH; py++) {
-      const ratioTop = (physH - 1 - py) / (physH - 1);
+    const sampleMap = new Array(imgH);
+    for (let py = 0; py < imgH; py++) {
+      const ratioTop = (imgH - 1 - py) / (imgH - 1);
       const freq = this.viewMinFreq * Math.pow(this.viewMaxFreq / this.viewMinFreq, ratioTop);
       const isOutOfRange = (freq < DATA_MIN_FREQ) || (freq > DATA_MAX_FREQ) || (freq > nyquist);
 
@@ -157,12 +140,10 @@ export class SpectrogramRenderer {
     }
 
     const totalFrames = audioHistory.length;
-    const effectiveGain = this.baseGain * this.colorGain;
+    const bakedLUT = this.bakedColorLUT;
 
-    // バイリニア補間描画
-    for (let px = 0; px < physGraphW; px++) {
-      const cssX = px / dpr;
-      const fFloat = (currentScrollX - halfGraph + cssX) / frameWidth;
+    for (let px = 0; px < imgW; px++) {
+      const fFloat = (currentScrollX - halfGraph + px) / frameWidth;
       const f0 = Math.floor(fFloat);
       const f1 = f0 + 1;
       const wt = fFloat - f0;
@@ -172,30 +153,31 @@ export class SpectrogramRenderer {
       const frame0 = audioHistory[f0];
       const frame1 = f1 < totalFrames ? audioHistory[f1] : frame0;
 
-      for (let py = 0; py < physH; py++) {
+      for (let py = 0; py < imgH; py++) {
         const smp = sampleMap[py];
         if (smp.isOutOfRange) continue;
 
         const v0 = frame0[smp.b0] * (1 - smp.frac) + frame0[smp.b1] * smp.frac;
         const v1 = frame1[smp.b0] * (1 - smp.frac) + frame1[smp.b1] * smp.frac;
-        const val = v0 * (1 - wt) + v1 * wt;
+        const val = Math.floor(v0 * (1 - wt) + v1 * wt);
 
-        const adjustedVal = Math.max(0, Math.min(255, Math.round(val * effectiveGain)));
-        data32[py * physGraphW + px] = COLOR_LUT_32[adjustedVal];
+        data32[py * imgW + px] = bakedLUT[val];
       }
     }
-    this.ctx.putImageData(imgData, physLeftMargin, 0);
 
-    // ベクトルUI描画
+    this.offCtx.putImageData(this.cachedImgData, 0, 0);
+
     this.ctx.save();
     this.ctx.scale(dpr, dpr);
+
+    this.ctx.drawImage(this.offCanvas, LEFT_MARGIN, 0, graphWidth, cssHeight);
 
     this.drawKeyboard(cssHeight);
     this.drawAxis(cssHeight, graphWidth);
     this.drawDataBoundaries(cssHeight, graphWidth);
 
-    // 基音 (F0) のピッチトラッキング折れ線グラフ描画
-    this.drawPitchTrack(cssHeight, graphWidth, halfGraph, audioHistory, currentScrollX, sampleRate, frameWidth);
+    // 基音の折れ線描画 (高速1パス描画)
+    this.drawPitchTrack(cssHeight, graphWidth, halfGraph, pitchHistory, currentScrollX, frameWidth);
 
     // センターライン
     const activeLineX = LEFT_MARGIN + halfGraph;
@@ -206,62 +188,58 @@ export class SpectrogramRenderer {
     this.ctx.lineTo(activeLineX, cssHeight);
     this.ctx.stroke();
 
-    // 右側スペクトル曲線グラフ & 倍音表示 (H1, H2, H3...)
+    // 右側スペクトル曲線グラフ
     const centerFrame = Math.round(currentScrollX / frameWidth);
     const activeSpectrum = (centerFrame >= 0 && centerFrame < totalFrames) ? audioHistory[centerFrame] : null;
-    const centerPitch = this.detectPitch(activeSpectrum, sampleRate);
-    this.drawSpectrumProfile(cssWidth, cssHeight, activeSpectrum, sampleMap, physH, centerPitch);
+    const centerPitch = (centerFrame >= 0 && centerFrame < pitchHistory.length) ? pitchHistory[centerFrame] : null;
+    this.drawSpectrumProfile(cssWidth, cssHeight, activeSpectrum, sampleMap, imgH, centerPitch);
 
     this.ctx.restore();
   }
 
-  // 基音周波数を線形につなぐ折れ線グラフ
-  drawPitchTrack(h, graphW, halfGraph, audioHistory, currentScrollX, sampleRate, frameWidth) {
-    const totalFrames = audioHistory.length;
-    if (totalFrames === 0) return;
+  // ループ内でのstroke()を完全撤廃し、1回のstroke()で全フレームを描画 (超高速化)
+  drawPitchTrack(h, graphW, halfGraph, pitchHistory, currentScrollX, frameWidth) {
+    if (!pitchHistory || pitchHistory.length === 0) return;
 
     const startFrame = Math.max(0, Math.floor((currentScrollX - halfGraph) / frameWidth) - 1);
-    const endFrame = Math.min(totalFrames, Math.ceil((currentScrollX + halfGraph) / frameWidth) + 1);
+    const endFrame = Math.min(pitchHistory.length, Math.ceil((currentScrollX + halfGraph) / frameWidth) + 1);
 
     this.ctx.save();
     this.ctx.beginPath();
     this.ctx.rect(LEFT_MARGIN, 0, graphW, h);
-    this.ctx.clip(); // 描画領域内のみクリップ
+    this.ctx.clip();
 
-    this.ctx.strokeStyle = "#ff007f"; // 見やすい鮮烈なネオンマゼンタ
-    this.ctx.lineWidth = 2.0;
-    this.ctx.shadowColor = "rgba(255, 0, 127, 0.6)";
-    this.ctx.shadowBlur = 4;
+    this.ctx.strokeStyle = "rgba(255, 0, 127, 0.9)";
+    this.ctx.lineWidth = 1.0;
 
+    this.ctx.beginPath();
     let isDrawing = false;
     let prevFreq = null;
 
     for (let f = startFrame; f < endFrame; f++) {
-      const pitch = this.detectPitch(audioHistory[f], sampleRate);
+      const pitch = pitchHistory[f];
       const x = LEFT_MARGIN + halfGraph + (f * frameWidth - currentScrollX);
 
       if (pitch && pitch >= this.viewMinFreq && pitch <= this.viewMaxFreq) {
         const y = this.freqToY(pitch, h);
 
-        // 周波数が前フレームから大きく跳ねていない場合のみ線形接続
         if (isDrawing && prevFreq && Math.abs(Math.log2(pitch / prevFreq)) < 0.6) {
           this.ctx.lineTo(x, y);
         } else {
-          this.ctx.beginPath();
           this.ctx.moveTo(x, y);
           isDrawing = true;
         }
         prevFreq = pitch;
-        this.ctx.stroke();
       } else {
         isDrawing = false;
         prevFreq = null;
       }
     }
+    // ループの外で1回だけストロークを実行
+    this.ctx.stroke();
     this.ctx.restore();
   }
 
-  // リアルピアノ鍵盤
   drawKeyboard(h) {
     this.ctx.fillStyle = "#18181b";
     this.ctx.fillRect(0, 0, KEYBOARD_WIDTH, h);
@@ -278,7 +256,6 @@ export class SpectrogramRenderer {
     const showAllLabels = avgKeyH >= 8.5;
     const blackKeyW = Math.round(KEYBOARD_WIDTH * 0.58);
 
-    // 1. 白鍵サーフェス
     for (let n = nMin; n <= nMax; n++) {
       const noteInOct = ((n % 12) + 12) % 12;
       const yBottom = this.freqToY(440 * Math.pow(2, (n - 0.5 - 69) / 12), h);
@@ -302,7 +279,6 @@ export class SpectrogramRenderer {
       }
     }
 
-    // 2. 白鍵仕切り線 (黒鍵の中央高さにのみ引く)
     this.ctx.strokeStyle = "#cbd5e1";
     this.ctx.lineWidth = 0.8;
 
@@ -328,7 +304,6 @@ export class SpectrogramRenderer {
       }
     }
 
-    // 3. 黒鍵の立体描画
     for (let n = nMin; n <= nMax; n++) {
       const noteInOct = ((n % 12) + 12) % 12;
       if (isBlackKey[noteInOct]) {
@@ -357,7 +332,6 @@ export class SpectrogramRenderer {
       }
     }
 
-    // 4. 音名の描画
     for (let n = nMin; n <= nMax; n++) {
       const noteInOct = ((n % 12) + 12) % 12;
       const isBlack = isBlackKey[noteInOct];
@@ -387,7 +361,6 @@ export class SpectrogramRenderer {
           this.ctx.fillText(noteName, blackKeyW - 3, Math.round(yTop + keyH / 2));
         }
       } else if (!showAllLabels && noteInOct === 0 && keyH >= 2.5) {
-        // 縮小時: 白鍵の右隣にC音のみ表示
         this.ctx.fillStyle = "#38bdf8";
         this.ctx.font = "bold 9px ui-monospace, 'Segoe UI', sans-serif";
         this.ctx.textAlign = "left";
@@ -404,8 +377,7 @@ export class SpectrogramRenderer {
     this.ctx.stroke();
   }
 
-  // 右側スペクトル曲線 ＆ 倍音表示 (H1, H2, H3...)
-  drawSpectrumProfile(totalW, h, activeSpectrum, sampleMap, physH, fundamentalPitch) {
+  drawSpectrumProfile(totalW, h, activeSpectrum, sampleMap, imgH, fundamentalPitch) {
     const panelX = totalW - SPECTRUM_PANEL_WIDTH;
 
     this.ctx.fillStyle = "rgba(16, 18, 24, 0.96)";
@@ -426,10 +398,10 @@ export class SpectrogramRenderer {
     if (!activeSpectrum) return;
 
     const points = [];
-    const step = 2;
-    for (let py = 0; py < physH; py += step) {
+    const step = 3;
+    for (let py = 0; py < imgH; py += step) {
       const smp = sampleMap[py];
-      const y = py / (this.canvas.height / h);
+      const y = py / (imgH / h);
       if (smp.isOutOfRange) {
         points.push({ x: panelX, y });
         continue;
@@ -442,7 +414,6 @@ export class SpectrogramRenderer {
     }
 
     if (points.length > 1) {
-      // 塗りつぶしグラデーション
       this.ctx.beginPath();
       this.ctx.moveTo(panelX, points[0].y);
       points.forEach((pt) => this.ctx.lineTo(pt.x, pt.y));
@@ -456,7 +427,6 @@ export class SpectrogramRenderer {
       this.ctx.fillStyle = fillGrad;
       this.ctx.fill();
 
-      // 発光輪郭線
       this.ctx.beginPath();
       this.ctx.moveTo(points[0].x, points[0].y);
       points.forEach((pt) => this.ctx.lineTo(pt.x, pt.y));
@@ -465,7 +435,6 @@ export class SpectrogramRenderer {
       this.ctx.stroke();
     }
 
-    // 倍音 (H1, H2, H3...) のマーキング表示
     if (fundamentalPitch && fundamentalPitch > 0) {
       for (let k = 1; k <= 16; k++) {
         const hFreq = fundamentalPitch * k;
@@ -475,9 +444,8 @@ export class SpectrogramRenderer {
         const y = this.freqToY(hFreq, h);
         if (y < 16 || y > h - 4) continue;
 
-        // 倍音位置での音圧X座標
         const exactRatio = (Math.log10(hFreq) - Math.log10(this.viewMinFreq)) / (Math.log10(this.viewMaxFreq) - Math.log10(this.viewMinFreq));
-        const py = Math.max(0, Math.min(physH - 1, Math.round((1 - exactRatio) * (physH - 1))));
+        const py = Math.max(0, Math.min(imgH - 1, Math.round((1 - exactRatio) * (imgH - 1))));
         const smp = sampleMap[py];
         let val = 0;
         if (smp && !smp.isOutOfRange) {
@@ -486,13 +454,11 @@ export class SpectrogramRenderer {
         const normalized = Math.min(1, (val * this.baseGain * this.colorGain) / 255);
         const dotX = panelX + normalized * (SPECTRUM_PANEL_WIDTH - 28);
 
-        // 倍音マーカードット
         this.ctx.fillStyle = k === 1 ? "#ffd700" : "#00e5ff";
         this.ctx.beginPath();
         this.ctx.arc(dotX, y, k === 1 ? 3 : 2, 0, Math.PI * 2);
         this.ctx.fill();
 
-        // H1, H2, H3... ラベル
         this.ctx.fillStyle = k === 1 ? "#ffd700" : "#a1a1aa";
         this.ctx.font = k === 1 ? "bold 9px ui-monospace, sans-serif" : "8px ui-monospace, sans-serif";
         this.ctx.textAlign = "left";

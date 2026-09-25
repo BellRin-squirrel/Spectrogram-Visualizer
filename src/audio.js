@@ -1,7 +1,7 @@
 import { FFT_SIZE } from "./constants.js";
 import { FastFourierTransformer } from "./fft.js";
 
-// PCM (Float32Array) を正規の 16bit WAV バイナリ (Blob) にエンコード
+// PCM を 16bit WAV (Blob) にエンコード
 export function encodeWAV(samples, sampleRate = 44100) {
   const buffer = new ArrayBuffer(44 + samples.length * 2);
   const view = new DataView(buffer);
@@ -17,12 +17,12 @@ export function encodeWAV(samples, sampleRate = 44100) {
   writeString(8, "WAVE");
   writeString(12, "fmt ");
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM format
-  view.setUint16(22, 1, true); // モノラル
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * 2, true);
   view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true); // 16-bit
+  view.setUint16(34, 16, true);
   writeString(36, "data");
   view.setUint32(40, samples.length * 2, true);
 
@@ -33,6 +33,48 @@ export function encodeWAV(samples, sampleRate = 44100) {
   }
 
   return new Blob([view], { type: "audio/wav" });
+}
+
+// 基音 (F0) の高速検出アルゴリズム（確実にエクスポート）
+export function detectPitchFromSpectrum(frameData, sampleRate) {
+  if (!frameData) return null;
+  const nyquist = sampleRate / 2;
+  const bufferLength = frameData.length;
+
+  const bMin = Math.max(2, Math.round((50 / nyquist) * bufferLength));
+  const bMax = Math.min(bufferLength - 1, Math.round((2000 / nyquist) * bufferLength));
+
+  let maxMag = 0;
+  for (let b = bMin; b <= bMax; b++) {
+    if (frameData[b] > maxMag) maxMag = frameData[b];
+  }
+  if (maxMag < 38) return null;
+
+  let bestBin = -1;
+  let bestScore = -1;
+
+  for (let b = bMin; b <= Math.floor(bMax / 2); b++) {
+    const v1 = frameData[b];
+    const v2 = frameData[b * 2] || 0;
+    const v3 = frameData[b * 3] || 0;
+    const score = v1 * 1.0 + v2 * 0.65 + v3 * 0.4;
+
+    if (score > bestScore && v1 > 35) {
+      bestScore = score;
+      bestBin = b;
+    }
+  }
+
+  if (bestBin <= 0) return null;
+
+  const y1 = frameData[bestBin - 1] || frameData[bestBin];
+  const y2 = frameData[bestBin];
+  const y3 = frameData[bestBin + 1] || frameData[bestBin];
+  const denom = 2 * (2 * y2 - y1 - y3);
+  const delta = denom !== 0 ? (y1 - y3) / denom : 0;
+  const exactBin = bestBin + Math.max(-0.5, Math.min(0.5, delta));
+
+  return (exactBin / bufferLength) * nyquist;
 }
 
 export class AudioManager {
@@ -46,6 +88,7 @@ export class AudioManager {
 
     this.history = [];
     this.historyTimes = [];
+    this.pitchHistory = [];
     this.recordedPcmSamples = [];
     this.fullBuffer = null;
 
@@ -112,6 +155,7 @@ export class AudioManager {
       osc.frequency.setValueAtTime(hFreq, now);
 
       const decayTime = Math.max(0.35, Math.min(3.2, (1100 / freq) * decayRatio));
+
       g.gain.setValueAtTime(0.001, now);
       g.gain.linearRampToValueAtTime(amp, now + 0.004);
       g.gain.exponentialRampToValueAtTime(0.0001, now + decayTime);
@@ -144,6 +188,7 @@ export class AudioManager {
     this.isMicActive = true;
     const baseOffsetSec = this.historyTimes[this.historyTimes.length - 1] || 0;
     const recordStartTime = performance.now() - baseOffsetSec * 1000;
+    const sampleRate = this.getSampleRate();
 
     const loop = () => {
       if (!this.isMicActive) return;
@@ -154,6 +199,9 @@ export class AudioManager {
       const elapsedSec = (performance.now() - recordStartTime) / 1000;
       this.history.push(dataArray);
       this.historyTimes.push(elapsedSec);
+
+      const pitch = detectPitchFromSpectrum(dataArray, sampleRate);
+      this.pitchHistory.push(pitch);
 
       onProcessFrame();
       requestAnimationFrame(loop);
@@ -240,40 +288,12 @@ export class AudioManager {
     this.isPlaying = false;
   }
 
-  async parseAudioFile(file) {
-    this.setupContext();
-    this.stopPlayback();
-    if (this.isMicActive) this.stopMic();
-
-    const arrayBuffer = await file.arrayBuffer();
-    this.fullBuffer = await this.ctx.decodeAudioData(arrayBuffer);
-
-    this.history = [];
-    this.historyTimes = [];
-
-    const sampleRate = this.fullBuffer.sampleRate;
-    const pcmData = this.fullBuffer.getChannelData(0);
-    this.recordedPcmSamples = [new Float32Array(pcmData)];
-
-    const transformer = new FastFourierTransformer(FFT_SIZE);
-    const stepSamples = Math.round(sampleRate / 60);
-    const totalSteps = Math.floor((pcmData.length - FFT_SIZE) / stepSamples);
-
-    for (let f = 0; f < totalSteps; f++) {
-      const start = f * stepSamples;
-      const slice = pcmData.subarray(start, start + FFT_SIZE);
-      const freqData = transformer.process(slice);
-
-      this.history.push(freqData);
-      this.historyTimes.push(start / sampleRate);
-    }
-  }
-
   clear() {
     this.stopPlayback();
     if (this.isMicActive) this.stopMic();
     this.history = [];
     this.historyTimes = [];
+    this.pitchHistory = [];
     this.recordedPcmSamples = [];
     this.fullBuffer = null;
   }
