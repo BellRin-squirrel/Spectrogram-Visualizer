@@ -1,7 +1,7 @@
 name: Build Desktop Apps
 
 on:
-  workflow_dispatch: # GitHubのWeb画面から手動で実行
+  workflow_dispatch: # 手動実行
 
 jobs:
   # ==============================
@@ -23,7 +23,6 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # ビルド時間を劇的に短縮するRustキャッシュ
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
         with:
@@ -32,10 +31,36 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # 万が一Gitに icon.ico が含まれていない場合の自動生成ガード
+      - name: Ensure Windows icons exist
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "src-tauri/icons/icon.ico")) {
+            Write-Host "icon.ico not found. Generating temporary icon..."
+            node -e '
+              const fs = require("fs"); const zlib = require("zlib");
+              const w = 512, h = 512, row = w * 4 + 1; const raw = Buffer.alloc(row * h);
+              for (let y = 0; y < h; y++) {
+                raw[y * row] = 0;
+                for (let x = 0; x < w; x++) {
+                  const i = y * row + 1 + x * 4;
+                  raw[i] = 4; raw[i+1] = 211; raw[i+2] = 97; raw[i+3] = 255;
+                }
+              }
+              const comp = zlib.deflateSync(raw);
+              function crc32(b) { let c = -1; for (let i = 0; i < b.length; i++) { c ^= b[i]; for (let j = 0; j < 8; j++) c = (c >>> 1) ^ ((c & 1) ? 0xedb88320 : 0); } return (c ^ -1) >>> 0; }
+              function chunk(t, d) { const l = Buffer.alloc(4); l.writeUInt32BE(d.length, 0); const tb = Buffer.from(t, "ascii"); const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([tb, d])), 0); return Buffer.concat([l, tb, d, crc]); }
+              const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+              const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6;
+              fs.writeFileSync("temp-icon.png", Buffer.concat([sig, chunk("IHDR", ihdr), chunk("IDAT", comp), chunk("IEND", Buffer.alloc(0))]));
+            '
+            npx @tauri-apps/cli icon temp-icon.png
+            Remove-Item temp-icon.png
+          }
+
       - name: Build Tauri App (Release)
         run: npm run tauri build
 
-      # 生成された .exe と .msi を Artifacts に保存
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -47,10 +72,10 @@ jobs:
           retention-days: 14
 
   # ==============================
-  # macOS ビルドタスク
+  # macOS ビルドタスク (Universal版)
   # ==============================
   build-macos:
-    name: Build for macOS
+    name: Build for macOS (Universal)
     runs-on: macos-latest
     steps:
       - name: Checkout repository
@@ -62,10 +87,12 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      - name: Setup Rust toolchain
+      # Intel (x86_64) と Apple Silicon (aarch64) の両ターゲットを追加
+      - name: Setup Rust toolchain (Universal targets)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
 
-      # ビルド時間を短縮するRustキャッシュ
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
         with:
@@ -74,14 +101,14 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build Tauri App (Release)
-        run: npm run tauri build
+      # Universalバイナリとしてビルド
+      - name: Build Tauri App (Universal Release)
+        run: npm run tauri build -- --target universal-apple-darwin
 
-      # 生成された .dmg を Artifacts に保存
       - name: Upload macOS Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Spectrogram-App-macOS-AppleSilicon
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          name: Spectrogram-App-macOS-Universal
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 14
