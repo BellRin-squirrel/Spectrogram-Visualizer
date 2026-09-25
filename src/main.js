@@ -212,7 +212,9 @@ async function createNewEditor() {
   await switchEditor(newEd);
 }
 
+// アプリ内メニュー & OSネイティブメニューバーの双方へエディタ一覧を同期
 function updateEditorListUI() {
+  // 1. HTML側のドロップダウンメニューを更新
   editorListContainer.innerHTML = "";
   editors.forEach((ed) => {
     const item = document.createElement("div");

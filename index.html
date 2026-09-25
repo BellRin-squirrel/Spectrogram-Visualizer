@@ -28,7 +28,7 @@
               </div>
             </div>
 
-            <!-- 編集タブ (録音) -->
+            <!-- 編集タブ -->
             <div class="menu-tab-wrapper">
               <button class="menu-tab-btn" id="editTabBtn">編集</button>
               <div class="menu-dropdown" id="editMenuDropdown" style="display: none;">
@@ -36,7 +36,7 @@
               </div>
             </div>
 
-            <!-- 表示タブ (拡大縮小 & カラー感度) -->
+            <!-- 表示タブ -->
             <div class="menu-tab-wrapper">
               <button class="menu-tab-btn" id="viewTabBtn">表示</button>
               <div class="menu-dropdown" id="viewMenuDropdown" style="display: none;">
@@ -58,11 +58,13 @@
           </nav>
         </div>
 
-        <div class="controls">
-          <button id="centerLockBtn" class="btn active-toggle active">中央追従: ON</button>
-          <!-- 厳密に4形式のみ指定 -->
-          <input type="file" id="fileInput" accept=".wav,.flac,.mp3,.ogg" style="display: none;" />
-        </div>
+        <!-- macOSでブロックされないオフスクリーンファイル入力要素 -->
+        <input 
+          type="file" 
+          id="fileInput" 
+          accept=".wav,.flac,.mp3,.ogg" 
+          style="position: absolute; top: -9999px; left: -9999px; width: 1px; height: 1px; opacity: 0; pointer-events: none;" 
+        />
       </header>
 
       <main>

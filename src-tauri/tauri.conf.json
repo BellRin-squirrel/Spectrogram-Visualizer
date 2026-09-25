@@ -10,11 +10,12 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Spectrogram Visualizer",
-        "width": 960,
-        "height": 600,
+        "width": 1080,
+        "height": 680,
         "minWidth": 640,
         "minHeight": 400
       }
