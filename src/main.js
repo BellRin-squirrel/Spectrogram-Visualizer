@@ -1,10 +1,9 @@
 import { DEFAULT_FRAME_WIDTH, DEFAULT_MIN_FREQ, DEFAULT_MAX_FREQ, KEYBOARD_WIDTH, LEFT_MARGIN, SPECTRUM_PANEL_WIDTH } from "./constants.js";
-import { AudioManager, encodeWAV, detectPitchFromSpectrum } from "./audio.js";
+import { AudioManager } from "./audio.js";
 import { SpectrogramRenderer } from "./renderer.js";
-import {
-  saveEditorToStorage, deleteEditorFromStorage,
-  loadAllEditorsFromStorage, saveActiveEditorId, getActiveEditorId
-} from "./db.js";
+import { FrequencyFilterManager } from "./filter.js";
+import { EditorManager } from "./editorManager.js";
+import { initModals, openFilterModal, openSaveConfirmModal, openCloseConfirmModal } from "./modals.js";
 
 // DOM 要素
 const statusText = document.getElementById("statusText");
@@ -12,8 +11,8 @@ const spectrogramArea = document.getElementById("spectrogramArea");
 const canvas = document.getElementById("spectrogramCanvas");
 const scrollContainer = document.getElementById("scrollContainer");
 const scrollDummy = document.getElementById("scrollDummy");
-
 const editorListContainer = document.getElementById("editorListContainer");
+
 const actionToggleRecord = document.getElementById("actionToggleRecord");
 const actionSave = document.getElementById("actionSave");
 const actionSaveAs = document.getElementById("actionSaveAs");
@@ -22,34 +21,13 @@ const emptyOverlay = document.getElementById("emptyOverlay");
 const centerMicBtn = document.getElementById("centerMicBtn");
 const fileInput = document.getElementById("fileInput");
 
-async function invokeTauri(cmd, args = {}) {
-  if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
-    return await window.__TAURI__.core.invoke(cmd, args);
-  }
-  return null;
-}
-
+// インスタンス化
 const audio = new AudioManager();
 const renderer = new SpectrogramRenderer(canvas);
+const filterManager = new FrequencyFilterManager();
+const editorManager = new EditorManager(audio, renderer, filterManager);
 
-class EditorSession {
-  constructor(id, name) {
-    this.id = id || "editor_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6);
-    this.name = name || "無題の解析";
-    this.history = [];
-    this.historyTimes = [];
-    this.pitchHistory = [];
-    this.pcmData = null;
-    this.sampleRate = 44100;
-    this.scrollX = 0;
-    this.isNew = true;
-    this.filePath = null;
-  }
-}
-
-let editors = [];
-let activeEditor = null;
-
+// 状態変数
 let frameWidth = DEFAULT_FRAME_WIDTH;
 let currentScrollX = 0;
 let targetScrollX = 0;
@@ -57,6 +35,8 @@ let cssWidth = 0;
 let cssHeight = 0;
 let dpr = window.devicePixelRatio || 1;
 let isProgrammaticScroll = false;
+let draggingFilter = null;
+let hoverCrosshair = null; // { x, y, area: 'spectrogram' | 'panel' }
 
 function resizeCanvas() {
   dpr = window.devicePixelRatio || 1;
@@ -86,9 +66,7 @@ function renderView() {
     scrollContainer.scrollLeft = maxScroll;
   } else {
     currentScrollX += (targetScrollX - currentScrollX) * 0.35;
-    if (Math.abs(targetScrollX - currentScrollX) < 0.1) {
-      currentScrollX = targetScrollX;
-    }
+    if (Math.abs(targetScrollX - currentScrollX) < 0.1) currentScrollX = targetScrollX;
     isProgrammaticScroll = true;
     scrollContainer.scrollLeft = Math.round(currentScrollX);
   }
@@ -96,428 +74,259 @@ function renderView() {
   renderer.render(
     cssWidth, cssHeight, dpr,
     audio.history, audio.pitchHistory, currentScrollX, audio.getSampleRate(), audio.isPlaying,
-    frameWidth
+    frameWidth, filterManager, draggingFilter ? null : hoverCrosshair
   );
 
-  if (activeEditor && activeEditor.isNew && audio.history.length === 0 && !audio.isMicActive) {
-    emptyOverlay.style.display = "flex";
-  } else {
-    emptyOverlay.style.display = "none";
-  }
+  const active = editorManager.activeEditor;
+  emptyOverlay.style.display = (active?.isNew && audio.history.length === 0 && !audio.isMicActive) ? "flex" : "none";
+  updateMenuState();
 
-  if (Math.abs(targetScrollX - currentScrollX) >= 0.1) {
-    requestAnimationFrame(renderView);
-  }
+  if (Math.abs(targetScrollX - currentScrollX) >= 0.1) requestAnimationFrame(renderView);
 }
 
 function updateMenuState() {
-  if (!activeEditor) return;
+  const active = editorManager.activeEditor;
+  if (!active) return;
 
-  if (activeEditor.filePath) {
-    actionSave.classList.remove("disabled");
-  } else {
-    actionSave.classList.add("disabled");
-  }
-
-  const hasAudioData = audio.history.length > 0 || (activeEditor.pcmData && activeEditor.pcmData.length > 0);
-  if (hasAudioData) {
-    actionSaveAs.classList.remove("disabled");
-  } else {
-    actionSaveAs.classList.add("disabled");
-  }
-
-  if (actionToggleRecord) {
-    actionToggleRecord.textContent = audio.isMicActive ? "マイク録音 停止" : "マイク録音 開始";
-  }
+  actionSave.classList.toggle("disabled", !active.filePath);
+  const hasAudio = audio.history.length > 0 || (active.pcmData && active.pcmData.length > 0);
+  actionSaveAs.classList.toggle("disabled", !hasAudio);
+  if (actionToggleRecord) actionToggleRecord.textContent = audio.isMicActive ? "マイク録音 停止" : "マイク録音 開始";
 }
 
-function getCurrentPcmSamples() {
-  if (audio.recordedPcmSamples.length > 0) {
-    const total = audio.recordedPcmSamples.reduce((sum, c) => sum + c.length, 0);
-    const pcm = new Float32Array(total);
-    let offset = 0;
-    for (const c of audio.recordedPcmSamples) {
-      pcm.set(c, offset);
-      offset += c.length;
-    }
-    return pcm;
-  }
-  return activeEditor.pcmData || null;
-}
-
-async function persistCurrentEditor() {
-  if (!activeEditor) return;
-  activeEditor.history = audio.history;
-  activeEditor.historyTimes = audio.historyTimes;
-  activeEditor.pitchHistory = audio.pitchHistory;
-  activeEditor.scrollX = currentScrollX;
-  activeEditor.sampleRate = audio.getSampleRate();
-
-  if (!activeEditor.filePath) {
-    activeEditor.pcmData = getCurrentPcmSamples();
-  }
-
-  await saveEditorToStorage(activeEditor);
-  await saveActiveEditorId(activeEditor.id);
-  updateEditorListUI();
-}
-
-async function verifyAndLoadEditorFile(editor) {
-  if (editor.filePath) {
-    const exists = await invokeTauri("check_file_exists", { path: editor.filePath });
-    if (!exists) {
-      const errMsg = `エラー: 元の音声ファイルが見つかりません。\nファイルが削除または移動された可能性があります。\nパス: ${editor.filePath}`;
-      alert(errMsg);
-      statusText.textContent = `エラー: ファイルが見つかりません (${editor.filePath})`;
-      throw new Error(errMsg);
-    }
-  }
-}
-
-async function switchEditor(editor) {
-  try {
-    await verifyAndLoadEditorFile(editor);
-  } catch (err) {
-    console.error(err);
-    return;
-  }
-
-  if (audio.isMicActive) audio.stopMic();
-  if (audio.isPlaying) audio.stopPlayback();
-
-  await persistCurrentEditor();
-
-  activeEditor = editor;
-  audio.history = editor.history || [];
-  audio.historyTimes = editor.historyTimes || [];
-  audio.pitchHistory = editor.pitchHistory || [];
-  audio.recordedPcmSamples = editor.pcmData ? [editor.pcmData] : [];
-  audio.fullBuffer = null;
-
-  currentScrollX = editor.scrollX || 0;
-  targetScrollX = currentScrollX;
-
-  await saveActiveEditorId(activeEditor.id);
-  updateEditorListUI();
+editorManager.setOnStateChange(() => {
+  editorManager.updateListUI(editorListContainer, async (ed) => {
+    const res = await editorManager.switchEditor(ed, currentScrollX, frameWidth);
+    if (res) { currentScrollX = res.scrollX; targetScrollX = res.scrollX; frameWidth = res.frameWidth; renderView(); }
+  });
   updateMenuState();
-  renderView();
-  statusText.textContent = `エディタ: ${activeEditor.name}`;
-}
-
-async function createNewEditor() {
-  await persistCurrentEditor();
-  const num = editors.length + 1;
-  const newEd = new EditorSession(null, `無題の解析 ${num}`);
-  editors.push(newEd);
-  await switchEditor(newEd);
-}
-
-// アプリ内メニューのエディタ一覧を更新
-function updateEditorListUI() {
-  editorListContainer.innerHTML = "";
-  editors.forEach((ed) => {
-    const item = document.createElement("div");
-    item.className = "menu-dropdown-item editor-item" + (ed.id === activeEditor.id ? " active" : "");
-    item.innerHTML = `<span class="check-mark">${ed.id === activeEditor.id ? "✓" : ""}</span><span class="editor-name">${ed.name}</span>`;
-    item.addEventListener("click", () => switchEditor(ed));
-    editorListContainer.appendChild(item);
-  });
-}
-
-function isValidAudioFile(filename) {
-  return /\.(wav|flac|mp3|ogg)$/i.test(filename);
-}
-
-async function triggerOpenFile() {
-  try {
-    const res = await invokeTauri("open_audio_file");
-    if (res) {
-      const [filePath, fileName, bytes] = res;
-      const uint8 = new Uint8Array(bytes);
-      await loadAudioFromBuffer(uint8.buffer, fileName, filePath);
-      return;
-    } else if (res === null) {
-      return;
-    }
-  } catch (err) {
-    console.warn("Native dialog fallback:", err);
-  }
-
-  fileInput.value = "";
-  fileInput.click();
-}
-
-async function triggerSave() {
-  if (!activeEditor || !activeEditor.filePath) return;
-  const pcm = getCurrentPcmSamples();
-  if (!pcm) {
-    statusText.textContent = "保存する音声データがありません";
-    return;
-  }
-
-  statusText.textContent = `上書き保存中: ${activeEditor.name}...`;
-  try {
-    const wavBlob = encodeWAV(pcm, audio.getSampleRate());
-    const arrayBuffer = await wavBlob.arrayBuffer();
-    const uint8 = Array.from(new Uint8Array(arrayBuffer));
-
-    await invokeTauri("save_audio_file", {
-      path: activeEditor.filePath,
-      data: uint8
-    });
-    statusText.textContent = `上書き保存完了: ${activeEditor.name}`;
-  } catch (err) {
-    console.error("保存失敗:", err);
-    statusText.textContent = "上書き保存に失敗しました: " + err.message;
-  }
-}
-
-async function triggerSaveAs() {
-  if (!activeEditor) return;
-  const pcm = getCurrentPcmSamples();
-  if (!pcm) {
-    statusText.textContent = "保存する音声データがありません";
-    return;
-  }
-
-  const baseName = activeEditor.name.replace(/\.[^/.]+$/, "") + ".wav";
-  statusText.textContent = "保存先を選択中...";
-
-  try {
-    const wavBlob = encodeWAV(pcm, audio.getSampleRate());
-    const arrayBuffer = await wavBlob.arrayBuffer();
-    const uint8 = Array.from(new Uint8Array(arrayBuffer));
-
-    const res = await invokeTauri("save_audio_file_as", {
-      defaultName: baseName,
-      data: uint8
-    });
-
-    if (res) {
-      const [newPath, newName] = res;
-      activeEditor.filePath = newPath;
-      activeEditor.name = newName;
-      await persistCurrentEditor();
-      updateMenuState();
-      statusText.textContent = `保存完了: ${newName}`;
-      return;
-    } else if (res === null) {
-      statusText.textContent = "保存をキャンセルしました";
-      return;
-    }
-  } catch (err) {
-    console.warn("Native save fallback:", err);
-  }
-
-  const wavBlob = encodeWAV(pcm, audio.getSampleRate());
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(wavBlob);
-  a.download = baseName;
-  a.click();
-  statusText.textContent = `ダウンロード保存しました: ${baseName}`;
-}
-
-async function triggerCloseEditor() {
-  if (!activeEditor) return;
-
-  const confirmed = confirm(`「${activeEditor.name}」を閉じますか？\n保存されていないデータは破棄されます。`);
-  if (!confirmed) return;
-
-  if (audio.isMicActive) audio.stopMic();
-  if (audio.isPlaying) audio.stopPlayback();
-
-  const closingId = activeEditor.id;
-  await deleteEditorFromStorage(closingId);
-
-  editors = editors.filter((e) => e.id !== closingId);
-
-  if (editors.length > 0) {
-    activeEditor = editors[0];
-    await switchEditor(activeEditor);
-  } else {
-    audio.clear();
-    const newEd = new EditorSession(null, "無題の解析 1");
-    editors = [newEd];
-    activeEditor = newEd;
-    currentScrollX = 0;
-    targetScrollX = 0;
-    await saveEditorToStorage(newEd);
-    await saveActiveEditorId(newEd.id);
-    updateEditorListUI();
-    updateMenuState();
-    renderView();
-    statusText.textContent = "すべてのエディタを閉じました";
-  }
-}
-
-document.getElementById("actionNew").addEventListener("click", () => createNewEditor());
-document.getElementById("actionOpen").addEventListener("click", () => triggerOpenFile());
-actionSave.addEventListener("click", () => triggerSave());
-actionSaveAs.addEventListener("click", () => triggerSaveAs());
-document.getElementById("actionClose").addEventListener("click", () => triggerCloseEditor());
-
-function attachKeepOpenAction(elementId, callback) {
-  const el = document.getElementById(elementId);
-  if (!el) return;
-  el.addEventListener("click", (e) => {
-    e.stopPropagation();
-    callback();
-  });
-}
-
-function zoomTime(factor) {
-  const centerFrame = currentScrollX / frameWidth;
-  const newWidth = Math.max(0.2, Math.min(30, frameWidth * factor));
-  if (newWidth !== frameWidth) {
-    frameWidth = newWidth;
-    const maxScroll = Math.max(0, (audio.history.length - 1) * frameWidth);
-    targetScrollX = Math.max(0, Math.min(maxScroll, centerFrame * frameWidth));
-    currentScrollX = targetScrollX;
-    renderView();
-  }
-}
-
-attachKeepOpenAction("actionZoomInX", () => {
-  zoomTime(1.3);
-  statusText.textContent = "時間軸を拡大しました";
-});
-attachKeepOpenAction("actionZoomOutX", () => {
-  zoomTime(1 / 1.3);
-  statusText.textContent = "時間軸を縮小しました";
-});
-attachKeepOpenAction("actionZoomInY", () => {
-  renderer.zoom(cssHeight / 2, -180, cssHeight);
-  renderView();
-  statusText.textContent = "周波数軸を拡大しました";
-});
-attachKeepOpenAction("actionZoomOutY", () => {
-  renderer.zoom(cssHeight / 2, 180, cssHeight);
-  renderView();
-  statusText.textContent = "周波数軸を縮小しました";
-});
-attachKeepOpenAction("actionGainUp", () => {
-  const percent = renderer.adjustColorGain(-150);
-  renderView();
-  statusText.textContent = `カラー感度: ${percent}%`;
-});
-attachKeepOpenAction("actionGainDown", () => {
-  const percent = renderer.adjustColorGain(150);
-  renderView();
-  statusText.textContent = `カラー感度: ${percent}%`;
-});
-attachKeepOpenAction("actionResetZoom", () => {
-  frameWidth = DEFAULT_FRAME_WIDTH;
-  renderer.viewMinFreq = DEFAULT_MIN_FREQ;
-  renderer.viewMaxFreq = DEFAULT_MAX_FREQ;
-  renderer.colorGain = 1.0;
-  renderer.rebuildBakedLUT();
-  renderView();
-  statusText.textContent = "拡大縮小・感度を初期値にリセットしました";
 });
 
-actionToggleRecord.addEventListener("click", () => toggleRecording());
+// ファイルメニュー
+document.getElementById("actionNew").addEventListener("click", async () => {
+  const res = await editorManager.createNewEditor(currentScrollX, frameWidth);
+  currentScrollX = res.scrollX; targetScrollX = res.scrollX; frameWidth = res.frameWidth; renderView();
+});
 
-// 非同期解析
-async function loadAudioFromBuffer(arrayBuffer, fileName, filePath = null) {
-  statusText.textContent = `デコード中: ${fileName}...`;
-  audio.setupContext();
-
-  try {
-    audio.fullBuffer = await audio.ctx.decodeAudioData(arrayBuffer);
-    audio.history = [];
-    audio.historyTimes = [];
-    audio.pitchHistory = [];
-
-    const sampleRate = audio.fullBuffer.sampleRate;
-    const pcmData = audio.fullBuffer.getChannelData(0);
-    audio.recordedPcmSamples = [new Float32Array(pcmData)];
-
-    const transformer = new (await import("./fft.js")).FastFourierTransformer(4096);
-    const stepSamples = Math.round(sampleRate / 60);
-    const totalSteps = Math.floor((pcmData.length - 4096) / stepSamples);
-
-    const chunkSize = 250;
-    for (let f = 0; f < totalSteps; f += chunkSize) {
-      const end = Math.min(totalSteps, f + chunkSize);
-      for (let i = f; i < end; i++) {
-        const start = i * stepSamples;
-        const slice = pcmData.subarray(start, start + 4096);
-        const freqData = transformer.process(slice);
-        audio.history.push(freqData);
-        audio.historyTimes.push(start / sampleRate);
-
-        const pitch = detectPitchFromSpectrum(freqData, sampleRate);
-        audio.pitchHistory.push(pitch);
+document.getElementById("actionOpen").addEventListener("click", async () => {
+  if (window.__TAURI__?.core?.invoke) {
+    try {
+      const res = await window.__TAURI__.core.invoke("open_audio_file");
+      if (res) {
+        const [filePath, fileName, bytes] = res;
+        await loadAudio(new Uint8Array(bytes).buffer, fileName, filePath);
+        return;
       }
-
-      const percent = Math.round((end / totalSteps) * 100);
-      statusText.textContent = `高精度FFT解析中 (${fileName}): ${percent}%`;
-      await new Promise((r) => setTimeout(r, 0));
-    }
-
-    if (activeEditor && activeEditor.isNew && audio.history.length > 0) {
-      activeEditor.name = fileName;
-      activeEditor.isNew = false;
-      activeEditor.filePath = filePath;
-    } else {
-      await persistCurrentEditor();
-      const newEd = new EditorSession(null, fileName);
-      newEd.isNew = false;
-      newEd.filePath = filePath;
-      editors.push(newEd);
-      activeEditor = newEd;
-    }
-
-    currentScrollX = 0;
-    targetScrollX = 0;
-    await persistCurrentEditor();
-    updateMenuState();
-    renderView();
-    statusText.textContent = `解析完了: ${fileName} (Spaceキーで再生)`;
-  } catch (err) {
-    console.error("解析失敗:", err);
-    statusText.textContent = "音声の解析に失敗しました: " + err.message;
+    } catch (e) {}
   }
+  fileInput.value = ""; fileInput.click();
+});
+
+async function loadAudio(arrayBuffer, name, path) {
+  const res = await editorManager.loadAudioFromBuffer(arrayBuffer, name, path, currentScrollX, frameWidth, (p) => {
+    statusText.textContent = `高精度FFT解析中 (${name}): ${p}%`;
+  });
+  currentScrollX = res.scrollX; targetScrollX = res.scrollX; frameWidth = res.frameWidth; renderView();
+  statusText.textContent = `解析完了: ${name} (Spaceキーで再生)`;
 }
 
 fileInput.addEventListener("change", async (e) => {
   const file = e.target.files[0];
-  if (file) {
-    const buffer = await file.arrayBuffer();
-    await loadAudioFromBuffer(buffer, file.name, null);
-  }
-  fileInput.value = "";
+  if (file) await loadAudio(await file.arrayBuffer(), file.name, null);
 });
 
+function handleSave(isSaveAs) {
+  const active = editorManager.activeEditor;
+  if (!active || (audio.history.length === 0 && !active.pcmData)) return;
+
+  const execute = async (applyFilter) => {
+    statusText.textContent = "保存中...";
+    if (isSaveAs) {
+      const savedName = await editorManager.saveFileAs(applyFilter);
+      statusText.textContent = savedName ? `保存完了: ${savedName}` : "保存をキャンセルしました";
+    } else {
+      const ok = await editorManager.saveFile(applyFilter);
+      statusText.textContent = ok ? `上書き保存完了: ${active.name}` : "上書き保存に失敗しました";
+    }
+  };
+
+  if (filterManager.hasActiveFilters()) {
+    openSaveConfirmModal({
+      onSaveWithFilter: () => execute(true),
+      onSaveWithoutFilter: () => execute(false),
+      onCancel: () => { statusText.textContent = "保存をやめました"; }
+    });
+  } else {
+    execute(false);
+  }
+}
+
+actionSave.addEventListener("click", () => handleSave(false));
+actionSaveAs.addEventListener("click", () => handleSave(true));
+
+document.getElementById("actionClose").addEventListener("click", () => {
+  const active = editorManager.activeEditor;
+  if (!active) return;
+  openCloseConfirmModal(active.name, async () => {
+    const res = await editorManager.closeActiveEditor();
+    if (res) { currentScrollX = res.scrollX; targetScrollX = res.scrollX; frameWidth = res.frameWidth; renderView(); }
+  });
+});
+
+// フィルター操作
+document.getElementById("actionAddFilter").addEventListener("click", () => {
+  filterManager.addDefaultFilter(); renderView(); statusText.textContent = "周波数フィルターを設置しました (200Hz〜500Hz, 100%)";
+});
+document.getElementById("actionClearFilters").addEventListener("click", () => {
+  filterManager.clearAll(); renderView(); statusText.textContent = "周波数フィルターを一括削除しました";
+});
+document.getElementById("actionManageFilters").addEventListener("click", () => {
+  openFilterModal(filterManager, () => renderView());
+});
+
+// ズーム・感度
+function attachAction(id, cb) {
+  document.getElementById(id)?.addEventListener("click", (e) => { e.stopPropagation(); cb(); });
+}
+function zoomTime(factor) {
+  const centerFrame = currentScrollX / frameWidth;
+  frameWidth = Math.max(0.2, Math.min(30, frameWidth * factor));
+  const maxScroll = Math.max(0, (audio.history.length - 1) * frameWidth);
+  targetScrollX = Math.max(0, Math.min(maxScroll, centerFrame * frameWidth));
+  currentScrollX = targetScrollX;
+  renderView();
+}
+
+attachAction("actionZoomInX", () => zoomTime(1.3));
+attachAction("actionZoomOutX", () => zoomTime(1 / 1.3));
+attachAction("actionZoomInY", () => { renderer.zoom(cssHeight / 2, -180, cssHeight); renderView(); });
+attachAction("actionZoomOutY", () => { renderer.zoom(cssHeight / 2, 180, cssHeight); renderView(); });
+attachAction("actionGainUp", () => { statusText.textContent = `カラー感度: ${renderer.adjustColorGain(-150)}%`; renderView(); });
+attachAction("actionGainDown", () => { statusText.textContent = `カラー感度: ${renderer.adjustColorGain(150)}%`; renderView(); });
+attachAction("actionResetZoom", () => {
+  frameWidth = DEFAULT_FRAME_WIDTH; renderer.viewMinFreq = DEFAULT_MIN_FREQ; renderer.viewMaxFreq = DEFAULT_MAX_FREQ;
+  renderer.colorGain = 1.0; renderer.rebuildBakedLUT(); renderView(); statusText.textContent = "リセットしました";
+});
+
+// 録音処理
 async function toggleRecording() {
   if (audio.isMicActive) {
     audio.stopMic();
     centerMicBtn.innerHTML = "🎙️ マイク録音開始";
     centerMicBtn.classList.remove("recording");
     statusText.textContent = "録音停止 (Spaceキーで中央位置から再生)";
-    updateMenuState();
-    await persistCurrentEditor();
+    await editorManager.saveCurrentEditorState(currentScrollX, frameWidth);
     renderView();
     return;
   }
 
+  const active = editorManager.activeEditor;
+  if (active && (audio.history.length > 0 || active.pcmData?.length > 0)) {
+    const res = await editorManager.createNewEditor(currentScrollX, frameWidth);
+    currentScrollX = res.scrollX; targetScrollX = res.scrollX; frameWidth = res.frameWidth;
+  } else if (active) {
+    active.isNew = false;
+  }
+
   try {
-    if (activeEditor) activeEditor.isNew = false;
     centerMicBtn.innerHTML = "⏹️ 録音停止";
     centerMicBtn.classList.add("recording");
-    updateMenuState();
     statusText.textContent = "録音中... (Spaceキーまたはメニューから停止)";
     await audio.startMic(() => renderView());
   } catch (err) {
-    console.error("マイクエラー:", err);
     statusText.textContent = "マイクへのアクセス失敗: " + err.message;
   }
 }
-
 centerMicBtn.addEventListener("click", toggleRecording);
+actionToggleRecord.addEventListener("click", toggleRecording);
 
-// クリックイベント
+function checkHoverFilterHandle(mouseX, mouseY) {
+  if (!filterManager.hasActiveFilters()) return false;
+  const graphWidth = cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH;
+  const centerX = LEFT_MARGIN + graphWidth / 2;
+
+  if (Math.abs(mouseX - centerX) <= 24) {
+    for (const f of filterManager.filters) {
+      const topY = Math.min(renderer.freqToY(f.maxFreq, cssHeight), renderer.freqToY(f.minFreq, cssHeight));
+      const bottomY = Math.max(renderer.freqToY(f.maxFreq, cssHeight), renderer.freqToY(f.minFreq, cssHeight));
+      if (Math.abs(mouseY - topY) <= 10 || Math.abs(mouseY - bottomY) <= 10) return true;
+    }
+  }
+  return false;
+}
+
+// マウスイベント (つまみドラッグ & ホバー十字線追従)
+spectrogramArea.addEventListener("mousedown", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+  const centerX = LEFT_MARGIN + (cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH) / 2;
+
+  if (filterManager.hasActiveFilters() && Math.abs(mouseX - centerX) <= 24) {
+    for (const f of filterManager.filters) {
+      const topY = Math.min(renderer.freqToY(f.maxFreq, cssHeight), renderer.freqToY(f.minFreq, cssHeight));
+      const bottomY = Math.max(renderer.freqToY(f.maxFreq, cssHeight), renderer.freqToY(f.minFreq, cssHeight));
+      if (Math.abs(mouseY - topY) <= 12) { draggingFilter = { filter: f, type: f.maxFreq >= f.minFreq ? "high" : "low" }; return; }
+      if (Math.abs(mouseY - bottomY) <= 12) { draggingFilter = { filter: f, type: f.maxFreq >= f.minFreq ? "low" : "high" }; return; }
+    }
+  }
+});
+
+// マウス移動: ホバー十字線 (クロスヘア) の更新 & つまみリサイズカーソル
+spectrogramArea.addEventListener("mousemove", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+
+  const graphWidth = cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH;
+  const panelX = cssWidth - SPECTRUM_PANEL_WIDTH;
+
+  if (draggingFilter) {
+    spectrogramArea.style.cursor = "ns-resize";
+    hoverCrosshair = null;
+    return;
+  }
+
+  // 1. スペクトル表示領域内でのホバー
+  if (mouseX > LEFT_MARGIN && mouseX < panelX && mouseY >= 0 && mouseY <= cssHeight) {
+    hoverCrosshair = { x: mouseX, y: mouseY, area: "spectrogram" };
+    renderView();
+  } 
+  // 2. 右側瞬間スペクトル波形領域内でのホバー
+  else if (mouseX >= panelX && mouseX <= cssWidth && mouseY >= 0 && mouseY <= cssHeight) {
+    hoverCrosshair = { x: mouseX, y: mouseY, area: "panel" };
+    renderView();
+  } else {
+    if (hoverCrosshair) {
+      hoverCrosshair = null;
+      renderView();
+    }
+  }
+
+  // カーソル形状
+  spectrogramArea.style.cursor = checkHoverFilterHandle(mouseX, mouseY) ? "ns-resize" : "default";
+});
+
+spectrogramArea.addEventListener("mouseleave", () => {
+  if (hoverCrosshair) {
+    hoverCrosshair = null;
+    renderView();
+  }
+  if (!draggingFilter) spectrogramArea.style.cursor = "default";
+});
+
+window.addEventListener("mousemove", (e) => {
+  if (!draggingFilter) return;
+  const rect = canvas.getBoundingClientRect();
+  const newFreq = renderer.yToFreq(Math.max(0, Math.min(cssHeight, e.clientY - rect.top)), cssHeight);
+  if (draggingFilter.type === "high") filterManager.updateFilter(draggingFilter.filter.id, { maxFreq: newFreq });
+  else filterManager.updateFilter(draggingFilter.filter.id, { minFreq: newFreq });
+  renderView();
+});
+window.addEventListener("mouseup", () => { draggingFilter = null; spectrogramArea.style.cursor = "default"; });
+
 spectrogramArea.addEventListener("click", (e) => {
+  if (draggingFilter) return;
   const rect = canvas.getBoundingClientRect();
   const mouseX = e.clientX - rect.left;
   const mouseY = e.clientY - rect.top;
@@ -527,23 +336,14 @@ spectrogramArea.addEventListener("click", (e) => {
     const midiNote = Math.round(69 + 12 * Math.log2(clickedFreq / 440));
     const exactFreq = 440 * Math.pow(2, (midiNote - 69) / 12);
     audio.playPianoNote(exactFreq);
-    const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-    const octave = Math.floor(midiNote / 12) - 1;
-    statusText.textContent = `鍵盤演奏: ${noteNames[((midiNote % 12) + 12) % 12]}${octave} (${Math.round(exactFreq)}Hz)`;
     return;
   }
 
   const graphWidth = cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH;
   if (mouseX > LEFT_MARGIN && mouseX < cssWidth - SPECTRUM_PANEL_WIDTH) {
-    const halfGraph = Math.floor(graphWidth / 2);
-    const graphX = mouseX - LEFT_MARGIN;
-
     if (audio.isPlaying) audio.stopPlayback();
-
     const maxScroll = Math.max(0, (audio.history.length - 1) * frameWidth);
-    const newTarget = currentScrollX + (graphX - halfGraph);
-    targetScrollX = Math.max(0, Math.min(maxScroll, newTarget));
-
+    targetScrollX = Math.max(0, Math.min(maxScroll, currentScrollX + (mouseX - LEFT_MARGIN - Math.floor(graphWidth / 2))));
     requestAnimationFrame(renderView);
   }
 });
@@ -556,75 +356,43 @@ spectrogramArea.addEventListener("wheel", (e) => {
   const mouseY = e.clientY - rect.top;
 
   if (mouseX <= LEFT_MARGIN) {
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
-      const percent = renderer.adjustColorGain(e.deltaY);
-      statusText.textContent = `カラー感度: ${percent}%`;
-    } else if (e.ctrlKey || e.metaKey) {
-      renderer.zoom(mouseY, e.deltaY, cssHeight);
-    } else {
-      renderer.pan(e.deltaY, cssHeight);
-    }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey) statusText.textContent = `カラー感度: ${renderer.adjustColorGain(e.deltaY)}%`;
+    else if (e.ctrlKey || e.metaKey) renderer.zoom(mouseY, e.deltaY, cssHeight);
+    else renderer.pan(e.deltaY, cssHeight);
     renderView();
     return;
   }
 
-  if (mouseX >= cssWidth - SPECTRUM_PANEL_WIDTH) {
-    if (e.ctrlKey || e.metaKey) {
-      const percent = renderer.adjustProfileScale(e.deltaY);
-      renderView();
-      statusText.textContent = `スペクトル波形縮尺: ${percent}%`;
-      return;
-    }
+  if (mouseX >= cssWidth - SPECTRUM_PANEL_WIDTH && (e.ctrlKey || e.metaKey)) {
+    statusText.textContent = `スペクトル波形縮尺: ${renderer.adjustProfileScale(e.deltaY)}%`;
+    renderView();
+    return;
   }
 
-  const graphWidth = cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH;
-  const halfGraph = Math.floor(graphWidth / 2);
-  const graphX = mouseX - LEFT_MARGIN;
-
   if (e.ctrlKey || e.metaKey) {
-    const cursorFrame = (currentScrollX + (graphX - halfGraph)) / frameWidth;
-    const zoomSpeed = e.shiftKey ? 0.0006 : 0.002;
-    const zoomFactor = Math.pow(1 + zoomSpeed, -e.deltaY);
-    const newFrameWidth = Math.max(0.2, Math.min(30, frameWidth * zoomFactor));
-
-    if (newFrameWidth !== frameWidth) {
-      frameWidth = newFrameWidth;
-      const newMaxScroll = Math.max(0, (audio.history.length - 1) * frameWidth);
-      const newScroll = cursorFrame * frameWidth - (graphX - halfGraph);
-      targetScrollX = Math.max(0, Math.min(newMaxScroll, newScroll));
-      currentScrollX = targetScrollX;
-    }
+    const graphWidth = cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH;
+    const cursorFrame = (currentScrollX + (mouseX - LEFT_MARGIN - Math.floor(graphWidth / 2))) / frameWidth;
+    frameWidth = Math.max(0.2, Math.min(30, frameWidth * Math.pow(1 + (e.shiftKey ? 0.0006 : 0.002), -e.deltaY)));
+    const maxScroll = Math.max(0, (audio.history.length - 1) * frameWidth);
+    targetScrollX = Math.max(0, Math.min(maxScroll, cursorFrame * frameWidth - (mouseX - LEFT_MARGIN - Math.floor(graphWidth / 2))));
+    currentScrollX = targetScrollX;
     renderView();
     return;
   }
 
   if (audio.isPlaying) audio.stopPlayback();
-
   const maxScroll = Math.max(0, (audio.history.length - 1) * frameWidth);
   const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-  const scrollSpeed = e.shiftKey ? 0.28 : 1.1;
-  targetScrollX = Math.max(0, Math.min(maxScroll, targetScrollX + delta * scrollSpeed));
+  targetScrollX = Math.max(0, Math.min(maxScroll, targetScrollX + delta * (e.shiftKey ? 0.28 : 1.1)));
   requestAnimationFrame(renderView);
 }, { passive: false });
 
 scrollContainer.addEventListener("scroll", () => {
-  if (isProgrammaticScroll) {
-    isProgrammaticScroll = false;
-    return;
-  }
+  if (isProgrammaticScroll) { isProgrammaticScroll = false; return; }
   if (Math.abs(scrollContainer.scrollLeft - currentScrollX) > 2) {
-    targetScrollX = scrollContainer.scrollLeft;
-    currentScrollX = targetScrollX;
-    renderView();
+    targetScrollX = scrollContainer.scrollLeft; currentScrollX = targetScrollX; renderView();
   }
 });
-
-function getCenterTimeSec() {
-  if (audio.history.length === 0) return 0;
-  const centerFrame = Math.round(currentScrollX / frameWidth);
-  const clamped = Math.max(0, Math.min(audio.history.length - 1, centerFrame));
-  return audio.historyTimes[clamped] || 0;
-}
 
 // Spaceキー
 window.addEventListener("keydown", (e) => {
@@ -634,60 +402,22 @@ window.addEventListener("keydown", (e) => {
       toggleRecording();
     } else if (audio.isPlaying) {
       audio.stopPlayback();
-      statusText.textContent = `一時停止: ${getCenterTimeSec().toFixed(2)}s`;
+      statusText.textContent = `一時停止`;
       renderView();
     } else {
-      const startSec = getCenterTimeSec();
-      const started = audio.startPlayback(
-        startSec,
-        (frameIdx) => {
-          targetScrollX = frameIdx * frameWidth;
-          currentScrollX = targetScrollX;
-          renderView();
-        },
-        () => {
-          statusText.textContent = "再生終了";
-          renderView();
-        }
-      );
-      if (started) {
-        statusText.textContent = `再生中: ${startSec.toFixed(2)}s 〜 (Spaceで一時停止)`;
-      }
+      const centerFrame = Math.round(currentScrollX / frameWidth);
+      const startSec = audio.historyTimes[Math.max(0, Math.min(audio.history.length - 1, centerFrame))] || 0;
+      audio.startPlayback(startSec, filterManager, (f) => {
+        targetScrollX = f * frameWidth; currentScrollX = targetScrollX; renderView();
+      }, () => { statusText.textContent = "再生終了"; renderView(); });
+      statusText.textContent = `再生中 (${filterManager.hasActiveFilters() ? "フィルター適用" : "全帯域"})`;
     }
   }
 });
 
 // 初期化
-async function initializeApp() {
-  const savedEditors = await loadAllEditorsFromStorage();
-  const lastActiveId = await getActiveEditorId();
-
-  if (savedEditors && savedEditors.length > 0) {
-    editors = savedEditors.map((d) => {
-      const ed = new EditorSession(d.id, d.name);
-      ed.history = d.history || [];
-      ed.historyTimes = d.historyTimes || [];
-      ed.pitchHistory = d.pitchHistory || [];
-      ed.pcmData = d.pcmData || null;
-      ed.sampleRate = d.sampleRate || 44100;
-      ed.scrollX = d.scrollX || 0;
-      ed.isNew = d.isNew !== undefined ? d.isNew : false;
-      ed.filePath = d.filePath || null;
-      return ed;
-    });
-
-    const target = editors.find((e) => e.id === lastActiveId) || editors[0];
-
-    try {
-      await verifyAndLoadEditorFile(target);
-      await switchEditor(target);
-    } catch (err) {
-      await createNewEditor();
-    }
-  } else {
-    await createNewEditor();
-  }
+initModals();
+editorManager.initialize((res) => {
+  if (res) { currentScrollX = res.scrollX; targetScrollX = res.scrollX; frameWidth = res.frameWidth; }
   resizeCanvas();
-}
-
-initializeApp();
+});

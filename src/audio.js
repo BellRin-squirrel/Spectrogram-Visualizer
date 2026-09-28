@@ -1,9 +1,17 @@
 import { FFT_SIZE } from "./constants.js";
 import { FastFourierTransformer } from "./fft.js";
 
-// PCM を 16bit WAV (Blob) にエンコード
-export function encodeWAV(samples, sampleRate = 44100) {
-  const buffer = new ArrayBuffer(44 + samples.length * 2);
+// ステレオ (1ch or 2ch) 対応の 16bit WAV エンコーダー
+export function encodeWAV(audioBuffer) {
+  const numChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  const length = audioBuffer.length;
+
+  const bytesPerSample = 2;
+  const blockAlign = numChannels * bytesPerSample;
+  const dataByteLength = length * blockAlign;
+
+  const buffer = new ArrayBuffer(44 + dataByteLength);
   const view = new DataView(buffer);
 
   const writeString = (offset, str) => {
@@ -13,29 +21,44 @@ export function encodeWAV(samples, sampleRate = 44100) {
   };
 
   writeString(0, "RIFF");
-  view.setUint32(4, 36 + samples.length * 2, true);
+  view.setUint32(4, 36 + dataByteLength, true);
   writeString(8, "WAVE");
   writeString(12, "fmt ");
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, numChannels, true);
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true); // 16-bit
   writeString(36, "data");
-  view.setUint32(40, samples.length * 2, true);
+  view.setUint32(40, dataByteLength, true);
 
+  // ステレオの場合はインターリーブ書き込み (L, R, L, R...)
   let offset = 44;
-  for (let i = 0; i < samples.length; i++, offset += 2) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  if (numChannels === 2) {
+    const left = audioBuffer.getChannelData(0);
+    const right = audioBuffer.getChannelData(1);
+    for (let i = 0; i < length; i++) {
+      let sl = Math.max(-1, Math.min(1, left[i]));
+      view.setInt16(offset, sl < 0 ? sl * 0x8000 : sl * 0x7fff, true);
+      offset += 2;
+      let sr = Math.max(-1, Math.min(1, right[i]));
+      view.setInt16(offset, sr < 0 ? sr * 0x8000 : sr * 0x7fff, true);
+      offset += 2;
+    }
+  } else {
+    const mono = audioBuffer.getChannelData(0);
+    for (let i = 0; i < length; i++) {
+      let s = Math.max(-1, Math.min(1, mono[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      offset += 2;
+    }
   }
 
   return new Blob([view], { type: "audio/wav" });
 }
 
-// 基音 (F0) の高速検出アルゴリズム（確実にエクスポート）
 export function detectPitchFromSpectrum(frameData, sampleRate) {
   if (!frameData) return null;
   const nyquist = sampleRate / 2;
@@ -233,18 +256,30 @@ export class AudioManager {
     return buffer;
   }
 
-  startPlayback(startSec, onUpdate, onEnd) {
-    this.setupContext();
-
+  // ステレオ対応の高品質フィルター適用バッファ取得
+  getFilteredBuffer(filterManager) {
     if (!this.fullBuffer && this.recordedPcmSamples.length > 0) {
       this.fullBuffer = this.buildBufferFromPcm();
     }
-    if (!this.fullBuffer || startSec >= this.fullBuffer.duration) return false;
+    if (!this.fullBuffer) return null;
+
+    if (!filterManager || !filterManager.hasActiveFilters()) {
+      return this.fullBuffer;
+    }
+
+    return filterManager.applyFilterToAudioBuffer(this.ctx, this.fullBuffer);
+  }
+
+  startPlayback(startSec, filterManager, onUpdate, onEnd) {
+    this.setupContext();
+
+    const playBuf = this.getFilteredBuffer(filterManager);
+    if (!playBuf || startSec >= playBuf.duration) return false;
 
     this.stopPlayback();
 
     this.activeSource = this.ctx.createBufferSource();
-    this.activeSource.buffer = this.fullBuffer;
+    this.activeSource.buffer = playBuf;
     this.activeSource.connect(this.ctx.destination);
 
     this.isPlaying = true;
@@ -255,7 +290,7 @@ export class AudioManager {
     const syncLoop = () => {
       if (!this.isPlaying) return;
       const currentSec = this.playStartOffsetSec + (this.ctx.currentTime - this.playStartCtxTime);
-      if (currentSec >= this.fullBuffer.duration) {
+      if (currentSec >= playBuf.duration) {
         this.stopPlayback();
         if (onEnd) onEnd();
         return;

@@ -1,4 +1,4 @@
-// 高精度 FFT エンジン (Cooley-Tukey Radix-2 + Hanning Window)
+// 高精度 FFT / IFFT エンジン (Cooley-Tukey Radix-2 + Hanning Window)
 export class FastFourierTransformer {
   constructor(size) {
     this.size = size;
@@ -23,39 +23,7 @@ export class FastFourierTransformer {
       real[i] = (realInput[i] || 0) * this.window[i];
     }
 
-    // ビット反転
-    let j = 0;
-    for (let i = 0; i < n - 1; i++) {
-      if (i < j) {
-        let temp = real[i]; real[i] = real[j]; real[j] = temp;
-      }
-      let k = n >> 1;
-      while (k <= j) {
-        j -= k;
-        k >>= 1;
-      }
-      j += k;
-    }
-
-    // バタフライ演算
-    for (let len = 2; len <= n; len <<= 1) {
-      const half = len >> 1;
-      const step = n / len;
-      for (let i = 0; i < n; i += len) {
-        let tableIdx = 0;
-        for (let k = 0; k < half; k++) {
-          const c = this.cosTable[tableIdx];
-          const s = this.sinTable[tableIdx];
-          const tr = real[i + k + half] * c - imag[i + k + half] * s;
-          const ti = real[i + k + half] * s + imag[i + k + half] * c;
-          real[i + k + half] = real[i + k] - tr;
-          imag[i + k + half] = imag[i + k] - ti;
-          real[i + k] += tr;
-          imag[i + k] += ti;
-          tableIdx += step;
-        }
-      }
-    }
+    this.fftCore(real, imag, false);
 
     const out = new Uint8Array(n / 2);
     const minDb = -85;
@@ -69,5 +37,50 @@ export class FastFourierTransformer {
       out[i] = Math.round(norm * 255);
     }
     return out;
+  }
+
+  // 複素FFT / IFFT コア演算
+  fftCore(real, imag, inverse = false) {
+    const n = this.size;
+    let j = 0;
+    for (let i = 0; i < n - 1; i++) {
+      if (i < j) {
+        let tr = real[i]; real[i] = real[j]; real[j] = tr;
+        let ti = imag[i]; imag[i] = imag[j]; imag[j] = ti;
+      }
+      let k = n >> 1;
+      while (k <= j) {
+        j -= k;
+        k >>= 1;
+      }
+      j += k;
+    }
+
+    for (let len = 2; len <= n; len <<= 1) {
+      const half = len >> 1;
+      const step = n / len;
+      for (let i = 0; i < n; i += len) {
+        let tableIdx = 0;
+        for (let k = 0; k < half; k++) {
+          let c = this.cosTable[tableIdx];
+          let s = inverse ? -this.sinTable[tableIdx] : this.sinTable[tableIdx];
+
+          const tr = real[i + k + half] * c - imag[i + k + half] * s;
+          const ti = real[i + k + half] * s + imag[i + k + half] * c;
+          real[i + k + half] = real[i + k] - tr;
+          imag[i + k + half] = imag[i + k] - ti;
+          real[i + k] += tr;
+          imag[i + k] += ti;
+          tableIdx += step;
+        }
+      }
+    }
+
+    if (inverse) {
+      for (let i = 0; i < n; i++) {
+        real[i] /= n;
+        imag[i] /= n;
+      }
+    }
   }
 }

@@ -46,7 +46,6 @@ h1 {
   white-space: nowrap;
 }
 
-/* メニューバーとホバー表示 */
 .app-menu-bar {
   display: flex;
   align-items: center;
@@ -69,7 +68,6 @@ h1 {
   transition: all 0.15s ease;
 }
 
-/* ホバー時にボタンとメニューを維持 */
 .menu-tab-wrapper:hover .menu-tab-btn {
   background-color: #2c2c31;
   color: #ffffff;
@@ -89,11 +87,10 @@ h1 {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
   min-width: 220px;
   padding: 6px 0;
-  margin-top: 0; /* 隙間をゼロに */
+  margin-top: 0;
   z-index: 200;
 }
 
-/* ボタンからメニューへ移動する隙間を埋める透明ブリッジ */
 .menu-dropdown::before {
   content: "";
   position: absolute;
@@ -104,7 +101,6 @@ h1 {
   background: transparent;
 }
 
-/* 左揃えのメニュー項目 */
 .menu-dropdown-item {
   padding: 7px 16px;
   font-size: 0.85rem;
@@ -178,32 +174,6 @@ h1 {
 .editor-item.active {
   color: #04d361;
   font-weight: 600;
-}
-
-.controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.btn {
-  padding: 6px 14px;
-  border-radius: 6px;
-  border: none;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-  font-size: 0.85rem;
-}
-
-.btn.active-toggle {
-  background-color: #323238;
-  color: #a8a8b3;
-}
-
-.btn.active-toggle.active {
-  background-color: #4863f7;
-  color: #ffffff;
 }
 
 main {
@@ -316,4 +286,187 @@ canvas {
   font-size: 0.8rem;
   color: #8d8d99;
   padding: 2px 4px;
+}
+
+/* モーダルウィンドウ */
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal-window {
+  background: #202024;
+  border: 1px solid #323238;
+  border-radius: 8px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.8);
+  width: 92%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 18px;
+  background: #18181b;
+  border-bottom: 1px solid #29292e;
+}
+
+.modal-header h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #e1e1e6;
+}
+
+.modal-close-btn {
+  background: transparent;
+  border: none;
+  color: #8d8d99;
+  font-size: 1.2rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.modal-close-btn:hover {
+  color: #ffffff;
+}
+
+.modal-body {
+  padding: 16px 18px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 18px;
+  background: #18181b;
+  border-top: 1px solid #29292e;
+}
+
+/* フィルター管理テーブル */
+.filter-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.filter-table th {
+  text-align: left;
+  padding: 8px;
+  color: #8d8d99;
+  border-bottom: 1px solid #323238;
+}
+
+.filter-table td {
+  padding: 8px;
+  border-bottom: 1px solid #29292e;
+  vertical-align: middle;
+}
+
+.filter-input-num {
+  background: #121214;
+  border: 1px solid #323238;
+  color: #e1e1e6;
+  padding: 4px 8px;
+  border-radius: 4px;
+  width: 90px;
+  font-family: ui-monospace, sans-serif;
+}
+
+/* 音量設定コントロール (スライダー ＋ 数値入力) */
+.volume-control-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.volume-slider {
+  flex: 1;
+  min-width: 90px;
+  accent-color: #04d361;
+  cursor: pointer;
+}
+
+.volume-input-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.volume-input-num {
+  background: #121214;
+  border: 1px solid #323238;
+  color: #04d361;
+  padding: 4px 6px;
+  border-radius: 4px;
+  width: 72px;
+  font-weight: 600;
+  text-align: right;
+  font-family: ui-monospace, sans-serif;
+}
+
+.volume-unit {
+  font-size: 0.8rem;
+  color: #8d8d99;
+}
+
+.filter-color-picker {
+  background: transparent;
+  border: none;
+  width: 32px;
+  height: 28px;
+  cursor: pointer;
+}
+
+.filter-delete-btn {
+  background: #e83f5b;
+  border: none;
+  color: #ffffff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.btn-secondary {
+  background: #323238;
+  color: #e1e1e6;
+  border: none;
+  padding: 7px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.btn-primary {
+  background: #04d361;
+  color: #121214;
+  border: none;
+  padding: 7px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.save-prompt-desc {
+  font-size: 0.9rem;
+  color: #c4c4cc;
+  margin-bottom: 16px;
+  line-height: 1.5;
 }

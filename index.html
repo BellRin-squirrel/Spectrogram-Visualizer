@@ -28,15 +28,20 @@
               </div>
             </div>
 
-            <!-- 編集タブ -->
+            <!-- 編集タブ (録音 ＆ 周波数フィルター) -->
             <div class="menu-tab-wrapper">
               <button class="menu-tab-btn" id="editTabBtn">編集</button>
               <div class="menu-dropdown" id="editMenuDropdown" style="display: none;">
                 <div class="menu-dropdown-item" id="actionToggleRecord">マイク録音 開始</div>
+                <div class="menu-dropdown-divider"></div>
+                <div class="menu-dropdown-header">周波数フィルター</div>
+                <div class="menu-dropdown-item" id="actionAddFilter">周波数フィルターを設置 (200~500Hz)</div>
+                <div class="menu-dropdown-item" id="actionManageFilters">周波数フィルターを管理...</div>
+                <div class="menu-dropdown-item" id="actionClearFilters">周波数フィルターを一括削除</div>
               </div>
             </div>
 
-            <!-- 表示タブ -->
+            <!-- 表示タブ (拡大縮小 & カラー感度) -->
             <div class="menu-tab-wrapper">
               <button class="menu-tab-btn" id="viewTabBtn">表示</button>
               <div class="menu-dropdown" id="viewMenuDropdown" style="display: none;">
@@ -58,7 +63,6 @@
           </nav>
         </div>
 
-        <!-- macOSでブロックされないオフスクリーンファイル入力要素 -->
         <input 
           type="file" 
           id="fileInput" 
@@ -79,6 +83,75 @@
         </div>
         <div class="status-bar" id="statusText">待機中</div>
       </main>
+    </div>
+
+    <!-- 周波数フィルター管理ウィンドウ (モーダル) -->
+    <div class="modal-backdrop" id="filterModal" style="display: none;">
+      <div class="modal-window" style="max-width: 680px;">
+        <div class="modal-header">
+          <h2>周波数フィルターの管理</h2>
+          <button class="modal-close-btn" id="closeFilterModalBtn">×</button>
+        </div>
+        <div class="modal-body">
+          <table class="filter-table">
+            <thead>
+              <tr>
+                <th style="width: 100px;">下限 (Hz)</th>
+                <th style="width: 100px;">上限 (Hz)</th>
+                <th>相対音量 (0〜10000%)</th>
+                <th style="width: 50px;">色</th>
+                <th style="width: 50px;">操作</th>
+              </tr>
+            </thead>
+            <tbody id="filterTableBody"></tbody>
+          </table>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="addNewFilterRowBtn">+ 新規フィルター追加</button>
+          <button class="btn-primary" id="finishFilterModalBtn">閉じる</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 保存時フィルター選択ダイアログ (モーダル) -->
+    <div class="modal-backdrop" id="saveConfirmModal" style="display: none;">
+      <div class="modal-window" style="max-width: 440px;">
+        <div class="modal-header">
+          <h2>音声ファイルの保存</h2>
+          <button class="modal-close-btn" id="closeSaveModalBtn">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="save-prompt-desc">
+            周波数フィルターが設置されています。<br />
+            フィルターで選択された周波数域のみを保存しますか？それとも元の音声全体を保存しますか？
+          </p>
+        </div>
+        <div class="modal-footer" style="flex-wrap: wrap;">
+          <button class="btn-secondary" id="btnCancelSave">保存をやめる</button>
+          <button class="btn-secondary" id="btnSaveWithoutFilter">フィルターを無効にして保存</button>
+          <button class="btn-primary" id="btnSaveWithFilter">フィルターを有効にして保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- エディタを閉じる確認モーダル -->
+    <div class="modal-backdrop" id="closeConfirmModal" style="display: none;">
+      <div class="modal-window" style="max-width: 420px;">
+        <div class="modal-header">
+          <h2>エディタを閉じる</h2>
+          <button class="modal-close-btn" id="closeCancelXBtn">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="save-prompt-desc" id="closeConfirmText">
+            このエディタを閉じますか？<br />
+            保存されていない編集データは破棄されます。
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="btnCancelClose">キャンセル</button>
+          <button class="btn-primary" id="btnConfirmClose" style="background-color: #e83f5b; color: #ffffff;">閉じる</button>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="/src/main.js"></script>

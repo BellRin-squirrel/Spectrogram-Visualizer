@@ -14,7 +14,7 @@ export class SpectrogramRenderer {
     this.viewMaxFreq = DEFAULT_MAX_FREQ;
     this.baseGain = 1.47;
     this.colorGain = 1.0;
-    this.spectrumProfileScale = 1.0; // 右側波形の左右方向の縮尺 (1.0 = 100%)
+    this.spectrumProfileScale = 1.0;
 
     this.bakedColorLUT = new Uint32Array(256);
     this.rebuildBakedLUT();
@@ -46,6 +46,15 @@ export class SpectrogramRenderer {
     const lMax = Math.log10(this.viewMaxFreq);
     const ratio = 1 - (y / h);
     return Math.pow(10, lMin + ratio * (lMax - lMin));
+  }
+
+  // 周波数から最も近いピアノの音名 (例: A4, A#3) を取得
+  freqToNearestNote(freq) {
+    if (!freq || freq <= 0) return "";
+    const midiNote = Math.round(69 + 12 * Math.log2(freq / 440));
+    const noteInOct = ((midiNote % 12) + 12) % 12;
+    const octave = Math.floor(midiNote / 12) - 1;
+    return `${NOTE_NAMES[noteInOct]}${octave}`;
   }
 
   zoom(mouseY, deltaY, cssHeight) {
@@ -95,14 +104,13 @@ export class SpectrogramRenderer {
     return Math.round(this.colorGain * 100);
   }
 
-  // 右側波形グラフの左右縮尺を調整 (0.2x 〜 5.0x)
   adjustProfileScale(deltaY) {
     const factor = Math.pow(1.002, -deltaY);
     this.spectrumProfileScale = Math.max(0.2, Math.min(5.0, this.spectrumProfileScale * factor));
     return Math.round(this.spectrumProfileScale * 100);
   }
 
-  render(cssWidth, cssHeight, dpr, audioHistory, pitchHistory, currentScrollX, sampleRate, isPlaying, frameWidth = 2) {
+  render(cssWidth, cssHeight, dpr, audioHistory, pitchHistory, currentScrollX, sampleRate, isPlaying, frameWidth = 2, filterManager = null, hoverCrosshair = null) {
     const graphWidth = Math.floor(cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH);
     if (graphWidth <= 0 || cssHeight <= 0) return;
 
@@ -178,6 +186,10 @@ export class SpectrogramRenderer {
 
     this.ctx.drawImage(this.offCanvas, LEFT_MARGIN, 0, graphWidth, cssHeight);
 
+    if (filterManager) {
+      this.drawFrequencyFilters(cssHeight, graphWidth, filterManager);
+    }
+
     this.drawKeyboard(cssHeight);
     this.drawAxis(cssHeight, graphWidth);
     this.drawDataBoundaries(cssHeight, graphWidth);
@@ -193,11 +205,149 @@ export class SpectrogramRenderer {
     this.ctx.lineTo(activeLineX, cssHeight);
     this.ctx.stroke();
 
-    // 右側スペクトル曲線グラフ (倍音ピーク精密スナップ描画)
+    // 右側スペクトル曲線グラフ
     const centerFrame = Math.round(currentScrollX / frameWidth);
     const activeSpectrum = (centerFrame >= 0 && centerFrame < totalFrames) ? audioHistory[centerFrame] : null;
     const centerPitch = (centerFrame >= 0 && centerFrame < pitchHistory.length) ? pitchHistory[centerFrame] : null;
     this.drawSpectrumProfile(cssWidth, cssHeight, activeSpectrum, sampleMap, imgH, centerPitch, sampleRate);
+
+    // 上下・左右クロスヘア線 (周波数 ＋ 鍵盤音名バッジ)
+    if (hoverCrosshair) {
+      this.drawCrosshairs(cssWidth, cssHeight, graphWidth, hoverCrosshair);
+    }
+
+    this.ctx.restore();
+  }
+
+  // 十字線と「周波数 ＋ 最も近い鍵盤音名」の描画
+  drawCrosshairs(totalW, h, graphW, hover) {
+    this.ctx.save();
+    this.ctx.lineWidth = 1;
+    this.ctx.setLineDash([3, 3]);
+
+    const freq = this.yToFreq(hover.y, h);
+    const noteName = this.freqToNearestNote(freq);
+    const labelText = `${Math.round(freq).toLocaleString()} Hz (${noteName})`;
+
+    this.ctx.font = "bold 9px ui-monospace, sans-serif";
+    const badgeW = this.ctx.measureText(labelText).width + 12;
+    const badgeH = 16;
+
+    if (hover.area === "spectrogram") {
+      const panelX = totalW - SPECTRUM_PANEL_WIDTH;
+      this.ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+
+      // 垂直線 (上下方向)
+      this.ctx.beginPath();
+      this.ctx.moveTo(hover.x, 0);
+      this.ctx.lineTo(hover.x, h);
+      this.ctx.stroke();
+
+      // 水平線 (左右方向)
+      this.ctx.beginPath();
+      this.ctx.moveTo(LEFT_MARGIN, hover.y);
+      this.ctx.lineTo(panelX, hover.y);
+      this.ctx.stroke();
+
+      // 周波数 ＋ 音名バッジ (左端に表示)
+      if (freq >= DATA_MIN_FREQ && freq <= DATA_MAX_FREQ) {
+        this.ctx.setLineDash([]);
+        this.ctx.fillStyle = "rgba(18, 18, 20, 0.88)";
+        this.ctx.fillRect(LEFT_MARGIN + 2, hover.y - badgeH / 2, badgeW, badgeH);
+        this.ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+        this.ctx.strokeRect(LEFT_MARGIN + 2, hover.y - badgeH / 2, badgeW, badgeH);
+
+        this.ctx.fillStyle = "#38bdf8"; // スカイブルー
+        this.ctx.textAlign = "left";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText(labelText, LEFT_MARGIN + 7, hover.y);
+      }
+    } else if (hover.area === "panel") {
+      const panelX = totalW - SPECTRUM_PANEL_WIDTH;
+      this.ctx.strokeStyle = "rgba(0, 229, 255, 0.55)";
+
+      // 垂直線 (上下方向)
+      this.ctx.beginPath();
+      this.ctx.moveTo(hover.x, 0);
+      this.ctx.lineTo(hover.x, h);
+      this.ctx.stroke();
+
+      // 水平線 (左右方向)
+      this.ctx.beginPath();
+      this.ctx.moveTo(panelX, hover.y);
+      this.ctx.lineTo(totalW, hover.y);
+      this.ctx.stroke();
+
+      // 周波数 ＋ 音名バッジ (パネル側)
+      if (freq >= DATA_MIN_FREQ && freq <= DATA_MAX_FREQ) {
+        this.ctx.setLineDash([]);
+        this.ctx.fillStyle = "rgba(16, 18, 24, 0.92)";
+        this.ctx.fillRect(panelX + 3, hover.y - badgeH / 2, badgeW, badgeH);
+        this.ctx.strokeStyle = "rgba(0, 229, 255, 0.45)";
+        this.ctx.strokeRect(panelX + 3, hover.y - badgeH / 2, badgeW, badgeH);
+
+        this.ctx.fillStyle = "#00e5ff"; // ネオンシアン
+        this.ctx.textAlign = "left";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText(labelText, panelX + 8, hover.y);
+      }
+    }
+
+    this.ctx.restore();
+  }
+
+  drawFrequencyFilters(h, graphW, filterManager) {
+    if (!filterManager.hasActiveFilters()) return;
+
+    this.ctx.save();
+    const handleW = 34;
+    const handleH = 8;
+    const centerX = LEFT_MARGIN + graphW / 2;
+
+    for (const f of filterManager.filters) {
+      const yHigh = this.freqToY(f.maxFreq, h);
+      const yLow = this.freqToY(f.minFreq, h);
+
+      const topY = Math.min(yHigh, yLow);
+      const bottomY = Math.max(yHigh, yLow);
+      const bandHeight = bottomY - topY;
+
+      this.ctx.fillStyle = f.color + "33";
+      this.ctx.fillRect(LEFT_MARGIN, topY, graphW, bandHeight);
+
+      this.ctx.strokeStyle = f.color;
+      this.ctx.lineWidth = 1.5;
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(LEFT_MARGIN, topY);
+      this.ctx.lineTo(LEFT_MARGIN + graphW, topY);
+      this.ctx.stroke();
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(LEFT_MARGIN, bottomY);
+      this.ctx.lineTo(LEFT_MARGIN + graphW, bottomY);
+      this.ctx.stroke();
+
+      this.ctx.fillStyle = f.color;
+      this.ctx.fillRect(centerX - handleW / 2, topY - handleH / 2, handleW, handleH);
+      this.ctx.strokeStyle = "#ffffff";
+      this.ctx.lineWidth = 1;
+      this.ctx.strokeRect(centerX - handleW / 2, topY - handleH / 2, handleW, handleH);
+
+      this.ctx.fillStyle = f.color;
+      this.ctx.fillRect(centerX - handleW / 2, bottomY - handleH / 2, handleW, handleH);
+      this.ctx.strokeStyle = "#ffffff";
+      this.ctx.lineWidth = 1;
+      this.ctx.strokeRect(centerX - handleW / 2, bottomY - handleH / 2, handleW, handleH);
+
+      const gainLabel = ` (${f.gain || 100}%)`;
+      this.ctx.fillStyle = "#ffffff";
+      this.ctx.font = "bold 9px ui-monospace, sans-serif";
+      this.ctx.textAlign = "left";
+      this.ctx.textBaseline = "middle";
+      this.ctx.fillText(`${Math.round(f.maxFreq)} Hz${gainLabel}`, centerX + handleW / 2 + 6, topY);
+      this.ctx.fillText(`${Math.round(f.minFreq)} Hz${gainLabel}`, centerX + handleW / 2 + 6, bottomY);
+    }
 
     this.ctx.restore();
   }
@@ -380,7 +530,6 @@ export class SpectrogramRenderer {
     this.ctx.stroke();
   }
 
-  // 右側スペクトル曲線グラフ (倍音ピークスナップ ＆ 左右縮尺対応)
   drawSpectrumProfile(totalW, h, activeSpectrum, sampleMap, imgH, fundamentalPitch, sampleRate) {
     const panelX = totalW - SPECTRUM_PANEL_WIDTH;
 
@@ -403,7 +552,7 @@ export class SpectrogramRenderer {
 
     const points = [];
     const step = 3;
-    const scaleFactor = this.spectrumProfileScale; // 左右方向の縮尺
+    const scaleFactor = this.spectrumProfileScale;
 
     for (let py = 0; py < imgH; py += step) {
       const smp = sampleMap[py];
@@ -441,7 +590,6 @@ export class SpectrogramRenderer {
       this.ctx.stroke();
     }
 
-    // 倍音 (H1, H2, H3...) の局所ピーク自動探索（山の頂上へスナップ）
     if (fundamentalPitch && fundamentalPitch > 0) {
       const nyquist = sampleRate / 2;
       const bufLen = activeSpectrum.length;
@@ -451,7 +599,6 @@ export class SpectrogramRenderer {
         if (targetFreq > this.viewMaxFreq || targetFreq > DATA_MAX_FREQ) break;
         if (targetFreq < this.viewMinFreq) continue;
 
-        // 理論周波数の近傍 ±7% から実際のスペクトルの山（最大ピーク）を特定
         const centerBin = (targetFreq / nyquist) * bufLen;
         const bMin = Math.max(1, Math.round(centerBin * 0.93));
         const bMax = Math.min(bufLen - 2, Math.round(centerBin * 1.07));
@@ -465,7 +612,6 @@ export class SpectrogramRenderer {
           }
         }
 
-        // 有効な山が存在する場合にスナップ
         if (peakB > 0 && maxV > 20) {
           const exactFreq = (peakB / bufLen) * nyquist;
           const y = this.freqToY(exactFreq, h);
