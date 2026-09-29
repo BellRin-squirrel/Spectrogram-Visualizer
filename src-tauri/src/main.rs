@@ -6,11 +6,14 @@ fn check_file_exists(path: String) -> bool {
     std::path::Path::new(&path).exists()
 }
 
-// OSネイティブのファイル選択ダイアログ (WAV, FLAC, MP3, OGG)
+// OSネイティブのファイル選択ダイアログ (WAV, FLAC, MP3, OGG, M4A)
 #[tauri::command]
 fn open_audio_file() -> Result<Option<(String, String, Vec<u8>)>, String> {
     let file = rfd::FileDialog::new()
-        .add_filter("対応音声ファイル (*.wav, *.flac, *.mp3, *.ogg)", &["wav", "flac", "mp3", "ogg"])
+        .add_filter(
+            "対応音声ファイル (*.wav, *.flac, *.mp3, *.ogg, *.m4a)",
+            &["wav", "flac", "mp3", "ogg", "m4a"],
+        )
         .pick_file();
 
     if let Some(path) = file {

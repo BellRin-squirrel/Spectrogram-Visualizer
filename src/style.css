@@ -46,6 +46,7 @@ h1 {
   white-space: nowrap;
 }
 
+/* メニューバーとホバー表示 */
 .app-menu-bar {
   display: flex;
   align-items: center;
@@ -85,7 +86,7 @@ h1 {
   border: 1px solid #323238;
   border-radius: 6px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
-  min-width: 220px;
+  min-width: 250px;
   padding: 6px 0;
   margin-top: 0;
   z-index: 200;
@@ -114,14 +115,14 @@ h1 {
   user-select: none;
 }
 
-.menu-dropdown-item span:last-child {
-  margin-left: auto;
-}
-
 .menu-dropdown-item:hover:not(.disabled) {
   background: #04d361;
   color: #121214;
   font-weight: 600;
+}
+
+.menu-dropdown-item:hover:not(.disabled) .shortcut-key {
+  color: #121214;
 }
 
 .menu-dropdown-item.disabled {
@@ -130,6 +131,15 @@ h1 {
   color: #71717a !important;
   background: transparent !important;
   pointer-events: none;
+}
+
+/* ショートカットキー表記 (右端に整列) */
+.shortcut-key {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: #8d8d99;
+  font-family: ui-monospace, sans-serif;
+  letter-spacing: 0.5px;
 }
 
 .menu-dropdown-divider {
@@ -357,7 +367,6 @@ canvas {
   border-top: 1px solid #29292e;
 }
 
-/* フィルター管理テーブル */
 .filter-table {
   width: 100%;
   border-collapse: collapse;
@@ -387,7 +396,6 @@ canvas {
   font-family: ui-monospace, sans-serif;
 }
 
-/* 音量設定コントロール (スライダー ＋ 数値入力) */
 .volume-control-cell {
   display: flex;
   align-items: center;

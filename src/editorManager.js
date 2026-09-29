@@ -217,25 +217,35 @@ export class EditorManager {
     const fullBuffer = await this.audio.ctx.decodeAudioData(arrayBuffer);
     const sampleRate = fullBuffer.sampleRate;
     const pcmData = fullBuffer.getChannelData(0);
+    const totalDuration = fullBuffer.duration;
 
     const history = [];
     const historyTimes = [];
     const pitchHistory = [];
 
     const { FastFourierTransformer } = await import("./fft.js");
-    const transformer = new FastFourierTransformer(4096);
-    const stepSamples = Math.round(sampleRate / 60);
-    const totalSteps = Math.floor((pcmData.length - 4096) / stepSamples);
+    const fftSize = 4096;
+    const transformer = new FastFourierTransformer(fftSize);
 
-    const chunkSize = 250;
+    const targetFps = 120;
+    const stepSamples = Math.round(sampleRate / targetFps);
+    const totalSteps = Math.max(2, Math.ceil(pcmData.length / stepSamples));
+
+    const chunkSize = 350;
     for (let f = 0; f < totalSteps; f += chunkSize) {
       const end = Math.min(totalSteps, f + chunkSize);
       for (let i = f; i < end; i++) {
         const start = i * stepSamples;
-        const slice = pcmData.subarray(start, start + 4096);
+        const slice = new Float32Array(fftSize);
+        if (start < pcmData.length) {
+          const available = Math.min(fftSize, pcmData.length - start);
+          slice.set(pcmData.subarray(start, start + available));
+        }
+
         const freqData = transformer.process(slice);
         history.push(freqData);
-        historyTimes.push(start / sampleRate);
+        const exactTime = (i / (totalSteps - 1)) * totalDuration;
+        historyTimes.push(exactTime);
         pitchHistory.push(detectPitchFromSpectrum(freqData, sampleRate));
       }
       if (onProgress) onProgress(Math.round((end / totalSteps) * 100));
@@ -260,7 +270,7 @@ export class EditorManager {
     const pcm = this.getCurrentPcmSamples(applyFilter);
     if (!pcm) return false;
 
-    const wavBlob = encodeWAV(pcm, this.audio.getSampleRate());
+    const wavBlob = encodeWAV(this.audio.fullBuffer);
     const arrayBuffer = await wavBlob.arrayBuffer();
     const uint8 = Array.from(new Uint8Array(arrayBuffer));
 
@@ -277,7 +287,7 @@ export class EditorManager {
     if (!pcm) return null;
 
     const baseName = this.activeEditor.name.replace(/\.[^/.]+$/, "") + ".wav";
-    const wavBlob = encodeWAV(pcm, this.audio.getSampleRate());
+    const wavBlob = encodeWAV(this.audio.fullBuffer);
     const arrayBuffer = await wavBlob.arrayBuffer();
     const uint8 = Array.from(new Uint8Array(arrayBuffer));
 
@@ -303,12 +313,14 @@ export class EditorManager {
     }
   }
 
+  // エディタ一覧リストのDOM更新 (this.activeEditor を安全に参照)
   updateListUI(container, onSelect) {
     container.innerHTML = "";
     this.editors.forEach((ed) => {
+      const isCurrent = this.activeEditor && ed.id === this.activeEditor.id;
       const item = document.createElement("div");
-      item.className = "menu-dropdown-item editor-item" + (this.activeEditor && ed.id === this.activeEditor.id ? " active" : "");
-      item.innerHTML = `<span class="check-mark">${this.activeEditor && ed.id === this.activeEditor.id ? "✓" : ""}</span><span class="editor-name">${ed.name}</span>`;
+      item.className = "menu-dropdown-item editor-item" + (isCurrent ? " active" : "");
+      item.innerHTML = `<span class="check-mark">${isCurrent ? "✓" : ""}</span><span class="editor-name">${ed.name}</span>`;
       item.addEventListener("click", () => onSelect(ed));
       container.appendChild(item);
     });

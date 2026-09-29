@@ -1,7 +1,6 @@
 import { FFT_SIZE } from "./constants.js";
 import { FastFourierTransformer } from "./fft.js";
 
-// ステレオ (1ch or 2ch) 対応の 16bit WAV エンコーダー
 export function encodeWAV(audioBuffer) {
   const numChannels = audioBuffer.numberOfChannels;
   const sampleRate = audioBuffer.sampleRate;
@@ -25,16 +24,15 @@ export function encodeWAV(audioBuffer) {
   writeString(8, "WAVE");
   writeString(12, "fmt ");
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
+  view.setUint16(20, 1, true);
   view.setUint16(22, numChannels, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * blockAlign, true);
   view.setUint16(32, blockAlign, true);
-  view.setUint16(34, 16, true); // 16-bit
+  view.setUint16(34, 16, true);
   writeString(36, "data");
   view.setUint32(40, dataByteLength, true);
 
-  // ステレオの場合はインターリーブ書き込み (L, R, L, R...)
   let offset = 44;
   if (numChannels === 2) {
     const left = audioBuffer.getChannelData(0);
@@ -71,7 +69,7 @@ export function detectPitchFromSpectrum(frameData, sampleRate) {
   for (let b = bMin; b <= bMax; b++) {
     if (frameData[b] > maxMag) maxMag = frameData[b];
   }
-  if (maxMag < 38) return null;
+  if (maxMag < 20) return null;
 
   let bestBin = -1;
   let bestScore = -1;
@@ -82,7 +80,7 @@ export function detectPitchFromSpectrum(frameData, sampleRate) {
     const v3 = frameData[b * 3] || 0;
     const score = v1 * 1.0 + v2 * 0.65 + v3 * 0.4;
 
-    if (score > bestScore && v1 > 35) {
+    if (score > bestScore && v1 > 18) {
       bestScore = score;
       bestBin = b;
     }
@@ -240,6 +238,15 @@ export class AudioManager {
     }
     this.isMicActive = false;
     this.fullBuffer = this.buildBufferFromPcm();
+
+    // 録音停止時にPCMサンプルの長さとスペクトログラムの時間軸を100%完全一致させる
+    if (this.fullBuffer && this.history.length > 1) {
+      const realDuration = this.fullBuffer.duration;
+      const M = this.history.length;
+      for (let f = 0; f < M; f++) {
+        this.historyTimes[f] = (f / (M - 1)) * realDuration;
+      }
+    }
   }
 
   buildBufferFromPcm() {
@@ -256,7 +263,6 @@ export class AudioManager {
     return buffer;
   }
 
-  // ステレオ対応の高品質フィルター適用バッファ取得
   getFilteredBuffer(filterManager) {
     if (!this.fullBuffer && this.recordedPcmSamples.length > 0) {
       this.fullBuffer = this.buildBufferFromPcm();
@@ -270,7 +276,8 @@ export class AudioManager {
     return filterManager.applyFilterToAudioBuffer(this.ctx, this.fullBuffer);
   }
 
-  startPlayback(startSec, filterManager, onUpdate, onEnd) {
+  // 純粋な進行比率 (0.0〜1.0) に基づく完全同期再生
+  startPlayback(startSec, filterManager, onUpdateProgress, onEnd) {
     this.setupContext();
 
     const playBuf = this.getFilteredBuffer(filterManager);
@@ -287,26 +294,32 @@ export class AudioManager {
     this.playStartOffsetSec = startSec;
     this.activeSource.start(0, startSec);
 
+    const totalDuration = playBuf.duration;
+
     const syncLoop = () => {
       if (!this.isPlaying) return;
-      const currentSec = this.playStartOffsetSec + (this.ctx.currentTime - this.playStartCtxTime);
-      if (currentSec >= playBuf.duration) {
+
+      const elapsedCtx = this.ctx.currentTime - this.playStartCtxTime;
+      const currentSec = this.playStartOffsetSec + elapsedCtx;
+
+      // 0.0 〜 1.0 の純粋な進行比率を算出
+      const progress = Math.min(1.0, currentSec / totalDuration);
+      if (onUpdateProgress) onUpdateProgress(progress);
+
+      // 音声終端に達した場合: 進行比率1.0 (完全な最後) に到達して自然停止
+      if (currentSec >= totalDuration) {
         this.stopPlayback();
         if (onEnd) onEnd();
         return;
       }
 
-      let f = 0;
-      while (f < this.historyTimes.length - 1 && this.historyTimes[f + 1] <= currentSec) {
-        f++;
-      }
-      onUpdate(f);
       requestAnimationFrame(syncLoop);
     };
     requestAnimationFrame(syncLoop);
 
     this.activeSource.onended = () => {
       if (this.isPlaying) {
+        if (onUpdateProgress) onUpdateProgress(1.0);
         this.stopPlayback();
         if (onEnd) onEnd();
       }

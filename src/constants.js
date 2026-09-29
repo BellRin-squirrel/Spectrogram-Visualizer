@@ -1,10 +1,11 @@
 // レイアウトパラメータ (CSSピクセル単位)
 export const FFT_SIZE = 4096;
 export const DEFAULT_FRAME_WIDTH = 2;   // デフォルトの1スライス横幅 (px)
-export const KEYBOARD_WIDTH = 50;       // ピアノ鍵盤の幅 (広めに調整)
+export const KEYBOARD_WIDTH = 50;       // ピアノ鍵盤の幅
 export const AXIS_WIDTH = 54;           // 周波数目盛り幅
 export const LEFT_MARGIN = KEYBOARD_WIDTH + AXIS_WIDTH; // 104px
 export const SPECTRUM_PANEL_WIDTH = 160;// 右側スペクトル曲線グラフの幅 (px)
+export const TIME_AXIS_HEIGHT = 20;     // 下部横軸 (時間・秒数ルーラー) の高さ (px)
 
 // 周波数範囲パラメータ
 export const DATA_MIN_FREQ = 20;        // 描画対象データの下限 (20Hz)

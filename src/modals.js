@@ -56,6 +56,34 @@ export function initModals() {
 
   closeFilterModalBtn.addEventListener("click", () => { filterModal.style.display = "none"; });
   finishFilterModalBtn.addEventListener("click", () => { filterModal.style.display = "none"; });
+
+  // Esc キーでモーダルを閉じつつ、macOSのフルスクリーン解除を阻止する
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key === "Escape" || e.code === "Escape") {
+        let isAnyModalOpen = false;
+
+        if (filterModal.style.display === "flex") {
+          filterModal.style.display = "none";
+          isAnyModalOpen = true;
+        } else if (saveConfirmModal.style.display === "flex") {
+          btnCancelSave.click();
+          isAnyModalOpen = true;
+        } else if (closeConfirmModal.style.display === "flex") {
+          btnCancelClose.click();
+          isAnyModalOpen = true;
+        }
+
+        // モーダルを閉じた時は、macOS/ブラウザのフルスクリーン解除イベントをブロック
+        if (isAnyModalOpen) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }
+    },
+    { capture: true } // 最優先でイベントを捕捉
+  );
 }
 
 export function openFilterModal(filterManager, onRenderNeeded) {

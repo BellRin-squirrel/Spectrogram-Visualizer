@@ -17,11 +17,21 @@
             <div class="menu-tab-wrapper">
               <button class="menu-tab-btn" id="fileTabBtn">ファイル</button>
               <div class="menu-dropdown" id="fileMenuDropdown" style="display: none;">
-                <div class="menu-dropdown-item" id="actionNew">新しい音声解析</div>
-                <div class="menu-dropdown-item" id="actionOpen">ファイルを開く</div>
-                <div class="menu-dropdown-item disabled" id="actionSave">保存 (上書き)</div>
-                <div class="menu-dropdown-item disabled" id="actionSaveAs">名前を付けて保存...</div>
-                <div class="menu-dropdown-item" id="actionClose">エディタを閉じる</div>
+                <div class="menu-dropdown-item" id="actionNew">
+                  新しい音声解析 <span class="shortcut-key">Ctrl+N</span>
+                </div>
+                <div class="menu-dropdown-item" id="actionOpen">
+                  ファイルを開く <span class="shortcut-key">Ctrl+O</span>
+                </div>
+                <div class="menu-dropdown-item disabled" id="actionSave">
+                  保存 (上書き) <span class="shortcut-key">Ctrl+S</span>
+                </div>
+                <div class="menu-dropdown-item disabled" id="actionSaveAs">
+                  名前を付けて保存...
+                </div>
+                <div class="menu-dropdown-item" id="actionClose">
+                  エディタを閉じる <span class="shortcut-key">Ctrl+W</span>
+                </div>
                 <div class="menu-dropdown-divider"></div>
                 <div class="menu-dropdown-header">開いているエディタ</div>
                 <div id="editorListContainer"></div>
@@ -32,11 +42,17 @@
             <div class="menu-tab-wrapper">
               <button class="menu-tab-btn" id="editTabBtn">編集</button>
               <div class="menu-dropdown" id="editMenuDropdown" style="display: none;">
-                <div class="menu-dropdown-item" id="actionToggleRecord">マイク録音 開始</div>
+                <div class="menu-dropdown-item" id="actionToggleRecord">
+                  マイク録音 開始 <span class="shortcut-key">Space</span>
+                </div>
                 <div class="menu-dropdown-divider"></div>
                 <div class="menu-dropdown-header">周波数フィルター</div>
-                <div class="menu-dropdown-item" id="actionAddFilter">周波数フィルターを設置 (200~500Hz)</div>
-                <div class="menu-dropdown-item" id="actionManageFilters">周波数フィルターを管理...</div>
+                <div class="menu-dropdown-item" id="actionAddFilter">
+                  周波数フィルターを設置 <span class="shortcut-key">Ctrl+F</span>
+                </div>
+                <div class="menu-dropdown-item" id="actionManageFilters">
+                  周波数フィルターを管理... <span class="shortcut-key">Ctrl+P</span>
+                </div>
                 <div class="menu-dropdown-item" id="actionClearFilters">周波数フィルターを一括削除</div>
               </div>
             </div>
@@ -46,16 +62,16 @@
               <button class="menu-tab-btn" id="viewTabBtn">表示</button>
               <div class="menu-dropdown" id="viewMenuDropdown" style="display: none;">
                 <div class="menu-dropdown-header">時間軸 (横方向)</div>
-                <div class="menu-dropdown-item keep-open" id="actionZoomInX">時間軸を拡大 (ズームイン) <span>🔍+</span></div>
-                <div class="menu-dropdown-item keep-open" id="actionZoomOutX">時間軸を縮小 (ズームアウト) <span>🔍-</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomInX">時間軸を拡大 (ズームイン) <span class="shortcut-key">🔍+</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomOutX">時間軸を縮小 (ズームアウト) <span class="shortcut-key">🔍-</span></div>
                 <div class="menu-dropdown-divider"></div>
                 <div class="menu-dropdown-header">周波数軸 (縦方向)</div>
-                <div class="menu-dropdown-item keep-open" id="actionZoomInY">周波数軸を拡大 (ズームイン) <span>↕+</span></div>
-                <div class="menu-dropdown-item keep-open" id="actionZoomOutY">周波数軸を縮小 (ズームアウト) <span>↕-</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomInY">周波数軸を拡大 (ズームイン) <span class="shortcut-key">↕+</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionZoomOutY">周波数軸を縮小 (ズームアウト) <span class="shortcut-key">↕-</span></div>
                 <div class="menu-dropdown-divider"></div>
                 <div class="menu-dropdown-header">カラー感度 (色の濃淡)</div>
-                <div class="menu-dropdown-item keep-open" id="actionGainUp">カラー感度を上げる (濃くする) <span>🎨+</span></div>
-                <div class="menu-dropdown-item keep-open" id="actionGainDown">カラー感度を下げる (薄くする) <span>🎨-</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionGainUp">カラー感度を上げる (濃くする) <span class="shortcut-key">🎨+</span></div>
+                <div class="menu-dropdown-item keep-open" id="actionGainDown">カラー感度を下げる (薄くする) <span class="shortcut-key">🎨-</span></div>
                 <div class="menu-dropdown-divider"></div>
                 <div class="menu-dropdown-item keep-open" id="actionResetZoom">拡大縮小・感度をリセット</div>
               </div>
@@ -66,7 +82,7 @@
         <input 
           type="file" 
           id="fileInput" 
-          accept=".wav,.flac,.mp3,.ogg" 
+          accept=".wav,.flac,.mp3,.ogg,.m4a" 
           style="position: absolute; top: -9999px; left: -9999px; width: 1px; height: 1px; opacity: 0; pointer-events: none;" 
         />
       </header>
