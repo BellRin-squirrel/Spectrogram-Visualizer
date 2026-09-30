@@ -1,7 +1,7 @@
 name: Build Desktop Apps
 
 on:
-  workflow_dispatch: # GitHubのWeb画面から手動実行
+  workflow_dispatch:
 
 jobs:
   # ==============================
@@ -31,7 +31,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 万が一Gitに icon.ico が含まれていない場合の自動生成ガード
       - name: Ensure Windows icons exist
         shell: pwsh
         run: |
@@ -58,10 +57,14 @@ jobs:
             Remove-Item temp-icon.png
           }
 
+      # 依存クレートを最新の互換バージョンに更新 (urlpattern不整合を解消)
+      - name: Update Cargo dependencies
+        run: cargo update
+        working-directory: ./src-tauri
+
       - name: Build Tauri App (Release)
         run: npm run tauri build
 
-      # 単体実行ファイル (.exe) およびインストーラー (.exe / .msi) を保存
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -89,7 +92,6 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      # Intel (x86_64) と Apple Silicon (aarch64) の両ターゲットをインストール
       - name: Setup Rust toolchain (Universal targets)
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -103,17 +105,19 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # Universalバイナリとしてビルド
+      # 依存クレートを最新の互換バージョンに更新
+      - name: Update Cargo dependencies
+        run: cargo update
+        working-directory: ./src-tauri
+
       - name: Build Tauri App (Universal Release)
         run: npm run tauri build -- --target universal-apple-darwin
 
-      # .app バンドルを tar.gz 形式で圧縮
       - name: Package .app as tar.gz
         run: |
           cd src-tauri/target/universal-apple-darwin/release/bundle/macos
           tar -czf "$GITHUB_WORKSPACE/Spectrogram-Visualizer-macOS-Universal.app.tar.gz" *.app
 
-      # .dmg と .app.tar.gz を保存
       - name: Upload macOS Artifacts
         uses: actions/upload-artifact@v4
         with:
