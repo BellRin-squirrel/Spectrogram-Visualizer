@@ -1,8 +1,8 @@
 [package]
-name = "Spectrogram-Visualizer"
-version = "0.3.0"
+name = "spectrogram-app"
+version = "0.3.1"
 description = "Spectrogram Visualizer in Tauri"
-authors = ["BellRin"]
+authors = ["you"]
 edition = "2021"
 
 [build-dependencies]
@@ -13,3 +13,4 @@ tauri = { version = "2", features = [] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rfd = "0.15"
+symphonia = { version = "0.5.4", features = ["all"] }

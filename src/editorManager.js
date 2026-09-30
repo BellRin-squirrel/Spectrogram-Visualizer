@@ -197,6 +197,7 @@ export class EditorManager {
     }
   }
 
+  // 音声ファイルの解析とロード
   async loadAudioFromBuffer(arrayBuffer, fileName, filePath, currentScrollX, frameWidth, onProgress) {
     if (this.audio.isMicActive) this.audio.stopMic();
     if (this.audio.isPlaying) this.audio.stopPlayback();
@@ -214,55 +215,67 @@ export class EditorManager {
     targetEditor.filePath = filePath;
 
     this.audio.setupContext();
-    const fullBuffer = await this.audio.ctx.decodeAudioData(arrayBuffer);
-    const sampleRate = fullBuffer.sampleRate;
-    const pcmData = fullBuffer.getChannelData(0);
-    const totalDuration = fullBuffer.duration;
-
-    const history = [];
-    const historyTimes = [];
-    const pitchHistory = [];
-
-    const { FastFourierTransformer } = await import("./fft.js");
-    const fftSize = 4096;
-    const transformer = new FastFourierTransformer(fftSize);
-
-    const targetFps = 120;
-    const stepSamples = Math.round(sampleRate / targetFps);
-    const totalSteps = Math.max(2, Math.ceil(pcmData.length / stepSamples));
-
-    const chunkSize = 350;
-    for (let f = 0; f < totalSteps; f += chunkSize) {
-      const end = Math.min(totalSteps, f + chunkSize);
-      for (let i = f; i < end; i++) {
-        const start = i * stepSamples;
-        const slice = new Float32Array(fftSize);
-        if (start < pcmData.length) {
-          const available = Math.min(fftSize, pcmData.length - start);
-          slice.set(pcmData.subarray(start, start + available));
-        }
-
-        const freqData = transformer.process(slice);
-        history.push(freqData);
-        const exactTime = (i / (totalSteps - 1)) * totalDuration;
-        historyTimes.push(exactTime);
-        pitchHistory.push(detectPitchFromSpectrum(freqData, sampleRate));
-      }
-      if (onProgress) onProgress(Math.round((end / totalSteps) * 100));
-      await new Promise((r) => setTimeout(r, 0));
+    if (this.audio.ctx.state === "suspended") {
+      await this.audio.ctx.resume();
     }
 
-    targetEditor.history = history;
-    targetEditor.historyTimes = historyTimes;
-    targetEditor.pitchHistory = pitchHistory;
-    targetEditor.fullBuffer = fullBuffer;
-    targetEditor.pcmData = new Float32Array(pcmData);
-    targetEditor.sampleRate = sampleRate;
-    targetEditor.scrollX = 0;
+    try {
+      // Rust側で標準WAVにデコード済みのため、decodeAudioDataが確実に100%通過します
+      const bufferToDecode = arrayBuffer.slice(0);
+      const fullBuffer = await this.audio.ctx.decodeAudioData(bufferToDecode);
 
-    const res = await this.applyEditorToWorkspace(targetEditor, false);
-    await this.saveCurrentEditorState(0, targetEditor.frameWidth);
-    return res;
+      const sampleRate = fullBuffer.sampleRate;
+      const pcmData = fullBuffer.getChannelData(0);
+      const totalDuration = fullBuffer.duration;
+
+      const history = [];
+      const historyTimes = [];
+      const pitchHistory = [];
+
+      const { FastFourierTransformer } = await import("./fft.js");
+      const fftSize = 4096;
+      const transformer = new FastFourierTransformer(fftSize);
+
+      const targetFps = 120;
+      const stepSamples = Math.round(sampleRate / targetFps);
+      const totalSteps = Math.max(2, Math.ceil(pcmData.length / stepSamples));
+
+      const chunkSize = 350;
+      for (let f = 0; f < totalSteps; f += chunkSize) {
+        const end = Math.min(totalSteps, f + chunkSize);
+        for (let i = f; i < end; i++) {
+          const start = i * stepSamples;
+          const slice = new Float32Array(fftSize);
+          if (start < pcmData.length) {
+            const available = Math.min(fftSize, pcmData.length - start);
+            slice.set(pcmData.subarray(start, start + available));
+          }
+
+          const freqData = transformer.process(slice);
+          history.push(freqData);
+          const exactTime = (i / (totalSteps - 1)) * totalDuration;
+          historyTimes.push(exactTime);
+          pitchHistory.push(detectPitchFromSpectrum(freqData, sampleRate));
+        }
+        if (onProgress) onProgress(Math.round((end / totalSteps) * 100));
+        await new Promise((r) => setTimeout(r, 0));
+      }
+
+      targetEditor.history = history;
+      targetEditor.historyTimes = historyTimes;
+      targetEditor.pitchHistory = pitchHistory;
+      targetEditor.fullBuffer = fullBuffer;
+      targetEditor.pcmData = new Float32Array(pcmData);
+      targetEditor.sampleRate = sampleRate;
+      targetEditor.scrollX = 0;
+
+      const res = await this.applyEditorToWorkspace(targetEditor, false);
+      await this.saveCurrentEditorState(0, targetEditor.frameWidth);
+      return res;
+    } catch (err) {
+      console.error("[DEBUG] デコード失敗:", err);
+      throw err;
+    }
   }
 
   async saveFile(applyFilter) {
@@ -272,11 +285,10 @@ export class EditorManager {
 
     const wavBlob = encodeWAV(this.audio.fullBuffer);
     const arrayBuffer = await wavBlob.arrayBuffer();
-    const uint8 = Array.from(new Uint8Array(arrayBuffer));
 
     await invokeTauri("save_audio_file", {
       path: this.activeEditor.filePath,
-      data: uint8
+      data: new Uint8Array(arrayBuffer)
     });
     return true;
   }
@@ -289,12 +301,11 @@ export class EditorManager {
     const baseName = this.activeEditor.name.replace(/\.[^/.]+$/, "") + ".wav";
     const wavBlob = encodeWAV(this.audio.fullBuffer);
     const arrayBuffer = await wavBlob.arrayBuffer();
-    const uint8 = Array.from(new Uint8Array(arrayBuffer));
 
     try {
       const res = await invokeTauri("save_audio_file_as", {
         defaultName: baseName,
-        data: uint8
+        data: new Uint8Array(arrayBuffer)
       });
       if (res) {
         const [newPath, newName] = res;
@@ -313,7 +324,6 @@ export class EditorManager {
     }
   }
 
-  // エディタ一覧リストのDOM更新 (this.activeEditor を安全に参照)
   updateListUI(container, onSelect) {
     container.innerHTML = "";
     this.editors.forEach((ed) => {

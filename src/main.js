@@ -110,32 +110,89 @@ async function handleNew() {
 }
 document.getElementById("actionNew").addEventListener("click", handleNew);
 
+function isValidAudioFile(filename) {
+  return /\.(wav|flac|mp3|ogg|m4a)$/i.test(filename);
+}
+
+// Base64 -> ArrayBuffer 復元 (診断ログ付き)
+function base64ToArrayBuffer(base64) {
+  try {
+    const cleanBase64 = base64.replace(/[\r\n\s]/g, "");
+    const binaryString = atob(cleanBase64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+  } catch (err) {
+    console.error("[DEBUG] Base64デコード失敗:", err);
+    throw new Error("Base64データのデコードに失敗しました: " + err.message);
+  }
+}
+
+// ファイルを開く (詳細ログ出力)
 async function handleOpen() {
   if (window.__TAURI__?.core?.invoke) {
     try {
-      const res = await window.__TAURI__.core.invoke("open_audio_file");
+      const res = await window.__TAURI__.core.invoke("pick_audio_file");
       if (res) {
-        const [filePath, fileName, bytes] = res;
-        await loadAudio(new Uint8Array(bytes).buffer, fileName, filePath);
+        const [filePath, fileName] = res;
+        statusText.textContent = `読み込み中: ${fileName}...`;
+        console.log("[DEBUG] 選択ファイル:", { filePath, fileName });
+
+        const rawData = await window.__TAURI__.core.invoke("read_audio_file", { path: filePath });
+        console.log("[DEBUG] read_audio_file 戻り値型:", typeof rawData, "長さ/要素数:", rawData?.length);
+
+        let arrayBuffer;
+        if (typeof rawData === "string") {
+          arrayBuffer = base64ToArrayBuffer(rawData);
+        } else if (rawData instanceof ArrayBuffer) {
+          arrayBuffer = rawData;
+        } else if (ArrayBuffer.isView(rawData)) {
+          arrayBuffer = rawData.buffer.slice(rawData.byteOffset, rawData.byteOffset + rawData.byteLength);
+        } else {
+          console.error("[DEBUG] 未知のデータ型を受信:", rawData);
+          throw new Error("Tauriから予期しないデータ型を受信しました: " + typeof rawData);
+        }
+
+        console.log("[DEBUG] 復元 ArrayBuffer バイト長:", arrayBuffer.byteLength);
+        await loadAudio(arrayBuffer, fileName, filePath);
       }
       return;
-    } catch (e) {}
+    } catch (e) {
+      console.error("[DEBUG] Native file open error:", e);
+      statusText.textContent = `読み込みエラー: ${e.message || e}`;
+      return;
+    }
   }
   fileInput.value = ""; fileInput.click();
 }
 document.getElementById("actionOpen").addEventListener("click", handleOpen);
 
 async function loadAudio(arrayBuffer, name, path) {
-  const res = await editorManager.loadAudioFromBuffer(arrayBuffer, name, path, currentScrollX, frameWidth, (p) => {
-    statusText.textContent = `高精度FFT解析中 (${name}): ${p}%`;
-  });
-  currentScrollX = res.scrollX; targetScrollX = res.scrollX; frameWidth = res.frameWidth; renderView();
-  statusText.textContent = `解析完了: ${name} (Spaceキーで再生)`;
+  if (!isValidAudioFile(name)) {
+    statusText.textContent = "非対応の形式です (.wav, .flac, .mp3, .ogg, .m4a のみ対応)";
+    return;
+  }
+  try {
+    const res = await editorManager.loadAudioFromBuffer(arrayBuffer, name, path, currentScrollX, frameWidth, (p) => {
+      statusText.textContent = `高精度FFT解析中 (${name}): ${p}%`;
+    });
+    currentScrollX = res.scrollX; targetScrollX = res.scrollX; frameWidth = res.frameWidth; renderView();
+    statusText.textContent = `解析完了: ${name} (Spaceキーで再生)`;
+  } catch (err) {
+    console.error("[DEBUG] loadAudio 失敗:", err);
+    statusText.textContent = "音声のデコードに失敗しました: " + (err.message || err);
+  }
 }
 
 fileInput.addEventListener("change", async (e) => {
   const file = e.target.files[0];
-  if (file) await loadAudio(await file.arrayBuffer(), file.name, null);
+  if (file) {
+    const buffer = await file.arrayBuffer();
+    await loadAudio(buffer, file.name, null);
+  }
 });
 
 // 保存処理
@@ -411,9 +468,7 @@ window.addEventListener("keydown", (e) => {
     if (key === "n") { e.preventDefault(); handleNew(); return; }
     if (key === "s") { e.preventDefault(); handleSave(false); return; }
     if (key === "o") { e.preventDefault(); handleOpen(); return; }
-    // 周波数フィルターの新規作成 (Ctrl/Cmd + F)
     if (key === "f") { e.preventDefault(); handleAddFilter(); return; }
-    // 周波数フィルター管理画面を開く (Ctrl/Cmd + P) ※印刷ダイアログを防止
     if (key === "p") {
       e.preventDefault();
       openFilterModal(filterManager, () => renderView());
@@ -421,7 +476,6 @@ window.addEventListener("keydown", (e) => {
     }
   }
 
-  // Spaceキーでの再生
   if (e.code === "Space" && !isInputFocused) {
     e.preventDefault();
     if (audio.isMicActive) {
