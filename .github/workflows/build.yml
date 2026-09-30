@@ -1,7 +1,7 @@
 name: Build Desktop Apps
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # GitHubのWeb画面から手動実行
 
 jobs:
   # ==============================
@@ -31,6 +31,7 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # アイコン欠落防止ガード
       - name: Ensure Windows icons exist
         shell: pwsh
         run: |
@@ -57,7 +58,7 @@ jobs:
             Remove-Item temp-icon.png
           }
 
-      # 依存クレートを最新の互換バージョンに更新 (urlpattern不整合を解消)
+      # 依存クレート更新
       - name: Update Cargo dependencies
         run: cargo update
         working-directory: ./src-tauri
@@ -65,6 +66,19 @@ jobs:
       - name: Build Tauri App (Release)
         run: npm run tauri build
 
+      # 生成されたバイナリ名を確実に Spectrogram-Visualizer.exe に揃える
+      - name: Ensure standalone exe name
+        shell: pwsh
+        run: |
+          $targetDir = "src-tauri/target/release"
+          $exe = Get-ChildItem "$targetDir/*.exe" | Where-Object { $_.Name -notlike "*build*" -and $_.Name -notlike "*installer*" } | Select-Object -First 1
+          if ($exe) {
+            Write-Host "Found standalone binary: $($exe.FullName)"
+            Copy-Item $exe.FullName "$targetDir/Spectrogram-Visualizer.exe" -Force
+          }
+          Get-ChildItem "$targetDir/*.exe"
+
+      # 単体実行ファイル (.exe) およびインストーラー (.exe / .msi) を出力
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -73,7 +87,7 @@ jobs:
             src-tauri/target/release/Spectrogram-Visualizer.exe
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
   # ==============================
@@ -105,7 +119,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 依存クレートを最新の互換バージョンに更新
       - name: Update Cargo dependencies
         run: cargo update
         working-directory: ./src-tauri
@@ -113,11 +126,13 @@ jobs:
       - name: Build Tauri App (Universal Release)
         run: npm run tauri build -- --target universal-apple-darwin
 
+      # .app バンドルを tar.gz 形式で圧縮
       - name: Package .app as tar.gz
         run: |
           cd src-tauri/target/universal-apple-darwin/release/bundle/macos
           tar -czf "$GITHUB_WORKSPACE/Spectrogram-Visualizer-macOS-Universal.app.tar.gz" *.app
 
+      # .dmg と .app.tar.gz を出力
       - name: Upload macOS Artifacts
         uses: actions/upload-artifact@v4
         with:
