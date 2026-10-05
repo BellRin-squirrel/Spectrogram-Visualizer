@@ -66,15 +66,20 @@ jobs:
       - name: Build Tauri App (Release)
         run: npm run tauri build
 
-      # 生成されたバイナリ名を確実に Spectrogram-Visualizer.exe に揃える
+      # バイナリ名が異なる場合のみリネーム・複製（同名自己上書きエラーを防止）
       - name: Ensure standalone exe name
         shell: pwsh
         run: |
           $targetDir = "src-tauri/target/release"
+          $destPath = "$targetDir/Spectrogram-Visualizer.exe"
           $exe = Get-ChildItem "$targetDir/*.exe" | Where-Object { $_.Name -notlike "*build*" -and $_.Name -notlike "*installer*" } | Select-Object -First 1
           if ($exe) {
-            Write-Host "Found standalone binary: $($exe.FullName)"
-            Copy-Item $exe.FullName "$targetDir/Spectrogram-Visualizer.exe" -Force
+            if ($exe.Name -ne "Spectrogram-Visualizer.exe") {
+              Write-Host "Copying $($exe.FullName) to $destPath"
+              Copy-Item $exe.FullName $destPath -Force
+            } else {
+              Write-Host "Binary is already named correctly: $($exe.FullName)"
+            }
           }
           Get-ChildItem "$targetDir/*.exe"
 
@@ -106,6 +111,7 @@ jobs:
           node-version: 20
           cache: 'npm'
 
+      # Intel (x86_64) と Apple Silicon (aarch64) の両ターゲットをインストール
       - name: Setup Rust toolchain (Universal targets)
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -119,10 +125,12 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # 依存クレート更新
       - name: Update Cargo dependencies
         run: cargo update
         working-directory: ./src-tauri
 
+      # Universalバイナリとしてビルド
       - name: Build Tauri App (Universal Release)
         run: npm run tauri build -- --target universal-apple-darwin
 
