@@ -12,7 +12,6 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
-// PCMサンプル列から標準16bit WAVバイナリを構築
 fn pcm_to_wav_bytes(samples: &[f32], channels: u16, sample_rate: u32) -> Vec<u8> {
     let data_len = (samples.len() * 2) as u32;
     let mut header = Vec::with_capacity(44 + samples.len() * 2);
@@ -22,14 +21,14 @@ fn pcm_to_wav_bytes(samples: &[f32], channels: u16, sample_rate: u32) -> Vec<u8>
     header.extend_from_slice(b"WAVE");
     header.extend_from_slice(b"fmt ");
     header.extend_from_slice(&16u32.to_le_bytes());
-    header.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    header.extend_from_slice(&1u16.to_le_bytes());
     header.extend_from_slice(&channels.to_le_bytes());
     header.extend_from_slice(&sample_rate.to_le_bytes());
     let byte_rate = sample_rate * (channels as u32) * 2;
     header.extend_from_slice(&byte_rate.to_le_bytes());
     let block_align = channels * 2;
     header.extend_from_slice(&block_align.to_le_bytes());
-    header.extend_from_slice(&16u16.to_le_bytes()); // 16bit
+    header.extend_from_slice(&16u16.to_le_bytes());
     header.extend_from_slice(b"data");
     header.extend_from_slice(&data_len.to_le_bytes());
 
@@ -46,13 +45,11 @@ fn pcm_to_wav_bytes(samples: &[f32], channels: u16, sample_rate: u32) -> Vec<u8>
     header
 }
 
-// ファイル存在確認
 #[tauri::command]
 fn check_file_exists(path: String) -> bool {
     Path::new(&path).exists()
 }
 
-// OSネイティブファイル選択ダイアログ
 #[tauri::command]
 fn pick_audio_file() -> Result<Option<(String, String)>, String> {
     let file = rfd::FileDialog::new()
@@ -71,7 +68,6 @@ fn pick_audio_file() -> Result<Option<(String, String)>, String> {
     }
 }
 
-// Rust側でどんな形式 (M4A/MP3/FLAC/OGG) も標準WAVへ100%確実にデコードして返す
 #[tauri::command]
 fn read_audio_file(path: String) -> Result<Response, String> {
     let file = File::open(&path).map_err(|e| format!("ファイルを開けません: {}", e))?;
@@ -138,13 +134,11 @@ fn read_audio_file(path: String) -> Result<Response, String> {
     Ok(Response::new(wav_bytes))
 }
 
-// OSネイティブ上書き保存
 #[tauri::command]
 fn save_audio_file(path: String, data: Vec<u8>) -> Result<(), String> {
     std::fs::write(&path, &data).map_err(|e| e.to_string())
 }
 
-// OSネイティブ名前を付けて保存
 #[tauri::command]
 fn save_audio_file_as(default_name: String, data: Vec<u8>) -> Result<Option<(String, String)>, String> {
     let file = rfd::FileDialog::new()
@@ -168,6 +162,27 @@ fn save_audio_file_as(default_name: String, data: Vec<u8>) -> Result<Option<(Str
     }
 }
 
+// MP4 動画保存ダイアログ
+#[tauri::command]
+fn save_video_file_as(default_name: String, data: Vec<u8>) -> Result<Option<(String, String)>, String> {
+    let file = rfd::FileDialog::new()
+        .set_file_name(&default_name)
+        .add_filter("MP4 Video (*.mp4)", &["mp4"])
+        .save_file();
+
+    if let Some(mut path) = file {
+        if path.extension().is_none() {
+            path.set_extension("mp4");
+        }
+        let path_str = path.to_string_lossy().to_string();
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        std::fs::write(&path, &data).map_err(|e| e.to_string())?;
+        Ok(Some((path_str, name)))
+    } else {
+        Ok(None)
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -175,7 +190,8 @@ fn main() {
             pick_audio_file,
             read_audio_file,
             save_audio_file,
-            save_audio_file_as
+            save_audio_file_as,
+            save_video_file_as
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

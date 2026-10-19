@@ -29,6 +29,9 @@
                 <div class="menu-dropdown-item disabled" id="actionSaveAs">
                   名前を付けて保存...
                 </div>
+                <div class="menu-dropdown-item disabled" id="actionExportVideo">
+                  動画ファイルを出力 (.mp4)...
+                </div>
                 <div class="menu-dropdown-item" id="actionClose">
                   エディタを閉じる <span class="shortcut-key">Ctrl+W</span>
                 </div>
@@ -166,6 +169,28 @@
         <div class="modal-footer">
           <button class="btn-secondary" id="btnCancelClose">キャンセル</button>
           <button class="btn-primary" id="btnConfirmClose" style="background-color: #e83f5b; color: #ffffff;">閉じる</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 動画出力中・進行状況モーダル -->
+    <div class="modal-backdrop" id="videoExportModal" style="display: none;">
+      <div class="modal-window" style="max-width: 460px;">
+        <div class="modal-header">
+          <h2>動画ファイルを出力中 (.mp4)</h2>
+        </div>
+        <div class="modal-body">
+          <p class="save-prompt-desc" style="color: #ffd700; font-weight: 500;">
+            ⚠️ 動画を録画・出力しています。<br />
+            完了するまでアプリを閉じたり、最小化しないでください。
+          </p>
+          <div class="export-progress-container">
+            <div class="export-progress-bar" id="exportProgressBar" style="width: 0%;"></div>
+          </div>
+          <div class="export-status-text" id="exportStatusText">進行状況: 0% (0.0s / 0.0s)</div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="btnCancelExportVideo" style="color: #e83f5b;">出力を中止</button>
         </div>
       </div>
     </div>

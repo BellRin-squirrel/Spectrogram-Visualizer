@@ -239,7 +239,6 @@ export class AudioManager {
     this.isMicActive = false;
     this.fullBuffer = this.buildBufferFromPcm();
 
-    // 録音停止時にPCMサンプルの長さとスペクトログラムの時間軸を100%完全一致させる
     if (this.fullBuffer && this.history.length > 1) {
       const realDuration = this.fullBuffer.duration;
       const M = this.history.length;
@@ -276,8 +275,8 @@ export class AudioManager {
     return filterManager.applyFilterToAudioBuffer(this.ctx, this.fullBuffer);
   }
 
-  // 純粋な進行比率 (0.0〜1.0) に基づく完全同期再生
-  startPlayback(startSec, filterManager, onUpdateProgress, onEnd) {
+  // 再生処理 (録画用 extraDestination が指定された場合はスピーカー音声を消音)
+  startPlayback(startSec, filterManager, onUpdateProgress, onEnd, extraDestination = null) {
     this.setupContext();
 
     const playBuf = this.getFilteredBuffer(filterManager);
@@ -287,7 +286,14 @@ export class AudioManager {
 
     this.activeSource = this.ctx.createBufferSource();
     this.activeSource.buffer = playBuf;
-    this.activeSource.connect(this.ctx.destination);
+
+    if (extraDestination) {
+      // 動画エクスポート時: 録画用ストリームにのみ接続し、スピーカーは消音
+      this.activeSource.connect(extraDestination);
+    } else {
+      // 通常再生時: スピーカーに接続
+      this.activeSource.connect(this.ctx.destination);
+    }
 
     this.isPlaying = true;
     this.playStartCtxTime = this.ctx.currentTime;
@@ -301,12 +307,10 @@ export class AudioManager {
 
       const elapsedCtx = this.ctx.currentTime - this.playStartCtxTime;
       const currentSec = this.playStartOffsetSec + elapsedCtx;
-
-      // 0.0 〜 1.0 の純粋な進行比率を算出
       const progress = Math.min(1.0, currentSec / totalDuration);
+
       if (onUpdateProgress) onUpdateProgress(progress);
 
-      // 音声終端に達した場合: 進行比率1.0 (完全な最後) に到達して自然停止
       if (currentSec >= totalDuration) {
         this.stopPlayback();
         if (onEnd) onEnd();

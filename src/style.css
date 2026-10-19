@@ -133,7 +133,6 @@ h1 {
   pointer-events: none;
 }
 
-/* ショートカットキー表記 (右端に整列) */
 .shortcut-key {
   margin-left: auto;
   font-size: 0.75rem;
@@ -305,7 +304,7 @@ canvas {
   left: 0;
   width: 100vw;
   height: 100vh;
-  background: rgba(0, 0, 0, 0.65);
+  background: rgba(0, 0, 0, 0.7);
   backdrop-filter: blur(4px);
   display: flex;
   justify-content: center;
@@ -477,4 +476,29 @@ canvas {
   color: #c4c4cc;
   margin-bottom: 16px;
   line-height: 1.5;
+}
+
+/* 動画出力プログレスバー */
+.export-progress-container {
+  width: 100%;
+  height: 12px;
+  background: #121214;
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 12px 0 8px 0;
+  border: 1px solid #323238;
+}
+
+.export-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #04d361, #00f0ff);
+  border-radius: 6px;
+  transition: width 0.15s ease-out;
+}
+
+.export-status-text {
+  font-size: 0.85rem;
+  color: #a1a1aa;
+  text-align: right;
+  font-family: ui-monospace, sans-serif;
 }

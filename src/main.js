@@ -3,6 +3,7 @@ import { AudioManager } from "./audio.js";
 import { SpectrogramRenderer } from "./renderer.js";
 import { FrequencyFilterManager } from "./filter.js";
 import { EditorManager } from "./editorManager.js";
+import { VideoExporter } from "./videoExporter.js";
 import { initModals, openFilterModal, openSaveConfirmModal, openCloseConfirmModal } from "./modals.js";
 
 // DOM 要素
@@ -16,16 +17,24 @@ const editorListContainer = document.getElementById("editorListContainer");
 const actionToggleRecord = document.getElementById("actionToggleRecord");
 const actionSave = document.getElementById("actionSave");
 const actionSaveAs = document.getElementById("actionSaveAs");
+const actionExportVideo = document.getElementById("actionExportVideo");
 
 const emptyOverlay = document.getElementById("emptyOverlay");
 const centerMicBtn = document.getElementById("centerMicBtn");
 const fileInput = document.getElementById("fileInput");
+
+// 動画出力モーダル要素
+const videoExportModal = document.getElementById("videoExportModal");
+const exportProgressBar = document.getElementById("exportProgressBar");
+const exportStatusText = document.getElementById("exportStatusText");
+const btnCancelExportVideo = document.getElementById("btnCancelExportVideo");
 
 // インスタンス化
 const audio = new AudioManager();
 const renderer = new SpectrogramRenderer(canvas);
 const filterManager = new FrequencyFilterManager();
 const editorManager = new EditorManager(audio, renderer, filterManager);
+const videoExporter = new VideoExporter(canvas, audio, filterManager);
 
 // 状態変数
 let frameWidth = DEFAULT_FRAME_WIDTH;
@@ -59,6 +68,7 @@ function renderView() {
   const containerClientW = scrollContainer.clientWidth || graphWidth;
   scrollDummy.style.width = `${containerClientW + maxScroll}px`;
 
+  // 録音中 または 再生中 (動画出力中含む): 遅延なく音の位置へ完全即時同期
   if (audio.isMicActive || audio.isPlaying) {
     currentScrollX = targetScrollX;
     isProgrammaticScroll = true;
@@ -90,6 +100,8 @@ function updateMenuState() {
   actionSave.classList.toggle("disabled", !active.filePath);
   const hasAudio = audio.history.length > 0 || (active.pcmData && active.pcmData.length > 0);
   actionSaveAs.classList.toggle("disabled", !hasAudio);
+  actionExportVideo.classList.toggle("disabled", !hasAudio);
+
   if (actionToggleRecord) actionToggleRecord.innerHTML = audio.isMicActive 
     ? 'マイク録音 停止 <span class="shortcut-key">Space</span>' 
     : 'マイク録音 開始 <span class="shortcut-key">Space</span>';
@@ -114,24 +126,6 @@ function isValidAudioFile(filename) {
   return /\.(wav|flac|mp3|ogg|m4a)$/i.test(filename);
 }
 
-// Base64 -> ArrayBuffer 復元 (診断ログ付き)
-function base64ToArrayBuffer(base64) {
-  try {
-    const cleanBase64 = base64.replace(/[\r\n\s]/g, "");
-    const binaryString = atob(cleanBase64);
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    return bytes.buffer;
-  } catch (err) {
-    console.error("[DEBUG] Base64デコード失敗:", err);
-    throw new Error("Base64データのデコードに失敗しました: " + err.message);
-  }
-}
-
-// ファイルを開く (詳細ログ出力)
 async function handleOpen() {
   if (window.__TAURI__?.core?.invoke) {
     try {
@@ -139,32 +133,12 @@ async function handleOpen() {
       if (res) {
         const [filePath, fileName] = res;
         statusText.textContent = `読み込み中: ${fileName}...`;
-        console.log("[DEBUG] 選択ファイル:", { filePath, fileName });
-
-        const rawData = await window.__TAURI__.core.invoke("read_audio_file", { path: filePath });
-        console.log("[DEBUG] read_audio_file 戻り値型:", typeof rawData, "長さ/要素数:", rawData?.length);
-
-        let arrayBuffer;
-        if (typeof rawData === "string") {
-          arrayBuffer = base64ToArrayBuffer(rawData);
-        } else if (rawData instanceof ArrayBuffer) {
-          arrayBuffer = rawData;
-        } else if (ArrayBuffer.isView(rawData)) {
-          arrayBuffer = rawData.buffer.slice(rawData.byteOffset, rawData.byteOffset + rawData.byteLength);
-        } else {
-          console.error("[DEBUG] 未知のデータ型を受信:", rawData);
-          throw new Error("Tauriから予期しないデータ型を受信しました: " + typeof rawData);
-        }
-
-        console.log("[DEBUG] 復元 ArrayBuffer バイト長:", arrayBuffer.byteLength);
+        const rawResponse = await window.__TAURI__.core.invoke("read_audio_file", { path: filePath });
+        const arrayBuffer = (rawResponse instanceof ArrayBuffer) ? rawResponse : rawResponse.buffer;
         await loadAudio(arrayBuffer, fileName, filePath);
       }
       return;
-    } catch (e) {
-      console.error("[DEBUG] Native file open error:", e);
-      statusText.textContent = `読み込みエラー: ${e.message || e}`;
-      return;
-    }
+    } catch (e) {}
   }
   fileInput.value = ""; fileInput.click();
 }
@@ -175,27 +149,19 @@ async function loadAudio(arrayBuffer, name, path) {
     statusText.textContent = "非対応の形式です (.wav, .flac, .mp3, .ogg, .m4a のみ対応)";
     return;
   }
-  try {
-    const res = await editorManager.loadAudioFromBuffer(arrayBuffer, name, path, currentScrollX, frameWidth, (p) => {
-      statusText.textContent = `高精度FFT解析中 (${name}): ${p}%`;
-    });
-    currentScrollX = res.scrollX; targetScrollX = res.scrollX; frameWidth = res.frameWidth; renderView();
-    statusText.textContent = `解析完了: ${name} (Spaceキーで再生)`;
-  } catch (err) {
-    console.error("[DEBUG] loadAudio 失敗:", err);
-    statusText.textContent = "音声のデコードに失敗しました: " + (err.message || err);
-  }
+  const res = await editorManager.loadAudioFromBuffer(arrayBuffer, name, path, currentScrollX, frameWidth, (p) => {
+    statusText.textContent = `高精度FFT解析中 (${name}): ${p}%`;
+  });
+  currentScrollX = res.scrollX; targetScrollX = res.scrollX; frameWidth = res.frameWidth; renderView();
+  statusText.textContent = `解析完了: ${name} (Spaceキーで再生)`;
 }
 
 fileInput.addEventListener("change", async (e) => {
   const file = e.target.files[0];
-  if (file) {
-    const buffer = await file.arrayBuffer();
-    await loadAudio(buffer, file.name, null);
-  }
+  if (file) await loadAudio(await file.arrayBuffer(), file.name, null);
 });
 
-// 保存処理
+// 音声ファイル保存
 function handleSave(isSaveAs) {
   const active = editorManager.activeEditor;
   if (!active || (audio.history.length === 0 && !active.pcmData)) return;
@@ -226,6 +192,82 @@ function handleSave(isSaveAs) {
 
 actionSave.addEventListener("click", () => handleSave(false));
 actionSaveAs.addEventListener("click", () => handleSave(true));
+
+// 動画ファイル出力 (.mp4) - スペクトル同期再描画 ＆ 完全消音
+actionExportVideo.addEventListener("click", () => {
+  const active = editorManager.activeEditor;
+  if (!active || (audio.history.length === 0 && !active.pcmData)) return;
+
+  exportProgressBar.style.width = "0%";
+  exportStatusText.textContent = "準備中...";
+  videoExportModal.style.display = "flex";
+
+  // 先頭 (0.0s) からの描画に初期化
+  const maxScroll = Math.max(0, (audio.history.length - 1) * frameWidth);
+  currentScrollX = 0;
+  targetScrollX = 0;
+  renderView();
+
+  videoExporter.startExport({
+    onProgress: (progress, currentSec, totalDuration) => {
+      // 1. スペクトル画面を音声の進捗に合わせて同期スクロール再描画 (映像を動かす！)
+      currentScrollX = progress * maxScroll;
+      targetScrollX = currentScrollX;
+      renderView();
+
+      // 2. モーダルのプログレスバーを更新
+      const percent = Math.min(100, Math.round(progress * 100));
+      exportProgressBar.style.width = `${percent}%`;
+      exportStatusText.textContent = `進行状況: ${percent}% (${currentSec.toFixed(1)}s / ${totalDuration.toFixed(1)}s)`;
+    },
+    onComplete: async (blob) => {
+      videoExportModal.style.display = "none";
+      statusText.textContent = "動画ファイルの保存先を選択してください...";
+
+      const baseName = active.name.replace(/\.[^/.]+$/, "") + ".mp4";
+      const arrayBuffer = await blob.arrayBuffer();
+
+      try {
+        if (window.__TAURI__?.core?.invoke) {
+          const res = await window.__TAURI__.core.invoke("save_video_file_as", {
+            defaultName: baseName,
+            data: new Uint8Array(arrayBuffer)
+          });
+          if (res) {
+            statusText.textContent = `動画を出力しました: ${res[1]}`;
+            // 完了後は先頭に戻す
+            currentScrollX = 0; targetScrollX = 0; renderView();
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn("Native video save fallback:", err);
+      }
+
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = baseName;
+      a.click();
+      statusText.textContent = `動画をダウンロードしました: ${baseName}`;
+      currentScrollX = 0; targetScrollX = 0; renderView();
+    },
+    onError: (err) => {
+      videoExportModal.style.display = "none";
+      alert("動画の出力に失敗しました: " + err.message);
+      statusText.textContent = "動画出力エラー: " + err.message;
+      renderView();
+    }
+  });
+});
+
+btnCancelExportVideo.addEventListener("click", () => {
+  videoExporter.cancel();
+  videoExportModal.style.display = "none";
+  statusText.textContent = "動画の出力を中止しました";
+  currentScrollX = 0;
+  targetScrollX = 0;
+  renderView();
+});
 
 // エディタを閉じる
 function handleClose() {
