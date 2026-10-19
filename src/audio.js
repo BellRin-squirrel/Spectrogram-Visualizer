@@ -57,6 +57,7 @@ export function encodeWAV(audioBuffer) {
   return new Blob([view], { type: "audio/wav" });
 }
 
+// 安定した有声音のみを厳密に検出するアルゴリズム (無声音・ノイズを徹底排除)
 export function detectPitchFromSpectrum(frameData, sampleRate) {
   if (!frameData) return null;
   const nyquist = sampleRate / 2;
@@ -65,29 +66,52 @@ export function detectPitchFromSpectrum(frameData, sampleRate) {
   const bMin = Math.max(2, Math.round((50 / nyquist) * bufferLength));
   const bMax = Math.min(bufferLength - 1, Math.round((2000 / nyquist) * bufferLength));
 
+  // 1. 周波数帯全体の平均音圧レベルと最大ピークの算出
+  let sumMag = 0;
   let maxMag = 0;
   for (let b = bMin; b <= bMax; b++) {
-    if (frameData[b] > maxMag) maxMag = frameData[b];
+    const v = frameData[b];
+    sumMag += v;
+    if (v > maxMag) maxMag = v;
   }
-  if (maxMag < 20) return null;
+  const avgMag = sumMag / (bMax - bMin + 1);
+
+  // 音圧が低すぎる、またはノイズ床とのコントラストが浅い場合は無音・無声音として除外
+  if (maxMag < 28 || maxMag - avgMag < 14) return null;
 
   let bestBin = -1;
   let bestScore = -1;
 
   for (let b = bMin; b <= Math.floor(bMax / 2); b++) {
     const v1 = frameData[b];
+    // 局所的な山（ローカルピーク）であること
+    const vPrev = frameData[b - 1] || 0;
+    const vNext = frameData[b + 1] || 0;
+    if (v1 <= vPrev || v1 <= vNext) continue;
+
+    // 平均ノイズ床からの突出度 (プロミネンス)
+    const prominence = v1 - avgMag;
+    if (prominence < 12) continue;
+
     const v2 = frameData[b * 2] || 0;
     const v3 = frameData[b * 3] || 0;
-    const score = v1 * 1.0 + v2 * 0.65 + v3 * 0.4;
 
-    if (score > bestScore && v1 > 18) {
+    // 調波性 (Harmonicity) 検証: 有声音なら第2または第3倍音のエネルギーも存在する
+    const harmonicSupport = Math.max(v2, v3);
+    if (harmonicSupport < avgMag * 0.8 && v1 < 55) continue;
+
+    const score = prominence * 1.0 + (v2 - avgMag * 0.5) * 0.5 + (v3 - avgMag * 0.5) * 0.3;
+
+    if (score > bestScore) {
       bestScore = score;
       bestBin = b;
     }
   }
 
-  if (bestBin <= 0) return null;
+  // 十分な有声音スコアがない場合は線を描画しない
+  if (bestBin <= 0 || bestScore < 16) return null;
 
+  // 放物線補間で正確な中心周波数を算出
   const y1 = frameData[bestBin - 1] || frameData[bestBin];
   const y2 = frameData[bestBin];
   const y3 = frameData[bestBin + 1] || frameData[bestBin];
@@ -275,7 +299,6 @@ export class AudioManager {
     return filterManager.applyFilterToAudioBuffer(this.ctx, this.fullBuffer);
   }
 
-  // 再生処理 (録画用 extraDestination が指定された場合はスピーカー音声を消音)
   startPlayback(startSec, filterManager, onUpdateProgress, onEnd, extraDestination = null) {
     this.setupContext();
 
@@ -288,10 +311,8 @@ export class AudioManager {
     this.activeSource.buffer = playBuf;
 
     if (extraDestination) {
-      // 動画エクスポート時: 録画用ストリームにのみ接続し、スピーカーは消音
       this.activeSource.connect(extraDestination);
     } else {
-      // 通常再生時: スピーカーに接続
       this.activeSource.connect(this.ctx.destination);
     }
 

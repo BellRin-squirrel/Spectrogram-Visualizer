@@ -115,9 +115,7 @@ export class SpectrogramRenderer {
     const graphWidth = Math.floor(cssWidth - LEFT_MARGIN - SPECTRUM_PANEL_WIDTH);
     if (graphWidth <= 0 || cssHeight <= 0) return;
 
-    // スペクトログラム有効高さ (下部時間軸ルーラーを除く)
     const effectiveH = Math.max(10, cssHeight - TIME_AXIS_HEIGHT);
-
     const halfGraph = Math.floor(graphWidth / 2);
     const imgW = graphWidth;
     const imgH = effectiveH;
@@ -188,23 +186,19 @@ export class SpectrogramRenderer {
     this.ctx.save();
     this.ctx.scale(dpr, dpr);
 
-    // スペクトログラム画像を拡大転送
     this.ctx.drawImage(this.offCanvas, LEFT_MARGIN, 0, graphWidth, effectiveH);
 
-    // 周波数フィルターの描画
     if (filterManager) {
       this.drawFrequencyFilters(effectiveH, graphWidth, filterManager);
     }
 
-    // ピアノ鍵盤 ＆ 周波数目盛り (effectiveH の範囲)
-    this.drawKeyboard(effectiveH);
     this.drawAxis(effectiveH, graphWidth);
     this.drawDataBoundaries(effectiveH, graphWidth);
+    this.drawKeyboard(effectiveH);
 
-    // 基音スプライン曲線
+    // 安定した有声音のみをスプライン接続
     this.drawPitchTrack(effectiveH, graphWidth, halfGraph, pitchHistory, currentScrollX, frameWidth);
 
-    // 横軸 (時間・秒数ルーラー ＆ 縦グリッド線) の描画
     this.drawTimeAxis(cssWidth, cssHeight, effectiveH, graphWidth, halfGraph, audioHistoryTimes, currentScrollX, frameWidth);
 
     // センターライン
@@ -216,13 +210,12 @@ export class SpectrogramRenderer {
     this.ctx.lineTo(activeLineX, effectiveH);
     this.ctx.stroke();
 
-    // 右側スペクトル曲線グラフ
+    // 右側スペクトル曲線
     const centerFrame = Math.round(currentScrollX / frameWidth);
     const activeSpectrum = (centerFrame >= 0 && centerFrame < totalFrames) ? audioHistory[centerFrame] : null;
     const centerPitch = (centerFrame >= 0 && centerFrame < pitchHistory.length) ? pitchHistory[centerFrame] : null;
     this.drawSpectrumProfile(cssWidth, cssHeight, activeSpectrum, sampleMap, imgH, centerPitch, sampleRate);
 
-    // 上下・左右クロスヘア線 (周波数・音名・時間バッジ)
     if (hoverCrosshair) {
       this.drawCrosshairs(cssWidth, cssHeight, effectiveH, graphWidth, halfGraph, audioHistoryTimes, currentScrollX, frameWidth, hoverCrosshair);
     }
@@ -230,257 +223,7 @@ export class SpectrogramRenderer {
     this.ctx.restore();
   }
 
-  // 横軸（時間・秒数）ルーラー ＆ 縦の破線グリッド描画
-  drawTimeAxis(totalW, totalH, effH, graphW, halfGraph, audioHistoryTimes, currentScrollX, frameWidth) {
-    const panelX = totalW - SPECTRUM_PANEL_WIDTH;
-
-    // 1. タイムルーラー背景帯
-    this.ctx.fillStyle = "#141416";
-    this.ctx.fillRect(0, effH, panelX, TIME_AXIS_HEIGHT);
-
-    // 上部境界線
-    this.ctx.strokeStyle = "#27272a";
-    this.ctx.lineWidth = 1;
-    this.ctx.beginPath();
-    this.ctx.moveTo(0, effH);
-    this.ctx.lineTo(panelX, effH);
-    this.ctx.stroke();
-
-    // 1フレームあたりの時間幅の算出
-    let timePerFrame = 1 / 120; // デフォルト 120fps
-    if (audioHistoryTimes && audioHistoryTimes.length >= 2) {
-      timePerFrame = (audioHistoryTimes[audioHistoryTimes.length - 1] - audioHistoryTimes[0]) / (audioHistoryTimes.length - 1);
-    }
-
-    // 1秒あたりの描画ピクセル幅
-    const pxPerSec = frameWidth / timePerFrame;
-    if (pxPerSec <= 0) return;
-
-    // 画面左端と右端に対応する時間 (秒)
-    const tStart = ((currentScrollX - halfGraph) / frameWidth) * timePerFrame;
-    const tEnd = ((currentScrollX + halfGraph) / frameWidth) * timePerFrame;
-
-    // 目盛りの時間間隔 (秒) をズーム率に応じて自動選択
-    const stepCandidates = [0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
-    const targetPxInterval = 75; // 目盛りの理想的なピクセル間隔
-    const idealStep = targetPxInterval / pxPerSec;
-    let step = stepCandidates[stepCandidates.length - 1];
-    for (const c of stepCandidates) {
-      if (c >= idealStep) {
-        step = c;
-        break;
-      }
-    }
-
-    // 目盛りの開始時間 (stepの倍数にスナップ)
-    const firstTick = Math.floor(tStart / step) * step;
-
-    this.ctx.font = "bold 9px ui-monospace, sans-serif";
-    this.ctx.textAlign = "center";
-    this.ctx.textBaseline = "middle";
-
-    for (let t = firstTick; t <= tEnd + step; t += step) {
-      // 秒数に対応する画面X座標
-      const frameIdx = t / timePerFrame;
-      const x = LEFT_MARGIN + halfGraph + (frameIdx * frameWidth - currentScrollX);
-
-      if (x < LEFT_MARGIN || x > panelX) continue;
-
-      // 1. スペクトログラム領域内の縦の破線グリッド
-      this.ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
-      this.ctx.setLineDash([2, 4]);
-      this.ctx.beginPath();
-      this.ctx.moveTo(x, 0);
-      this.ctx.lineTo(x, effH);
-      this.ctx.stroke();
-      this.ctx.setLineDash([]);
-
-      // 2. ルーラー内の目盛り刻み線 (ティック)
-      this.ctx.strokeStyle = "#71717a";
-      this.ctx.beginPath();
-      this.ctx.moveTo(x, effH);
-      this.ctx.lineTo(x, effH + 4);
-      this.ctx.stroke();
-
-      // 3. 秒数テキスト (例: 0s, 1.5s, 10s...)
-      let label = "";
-      if (t < 0) {
-        label = ""; // 録音開始前は非表示
-      } else if (step < 0.1) {
-        label = `${t.toFixed(2)}s`;
-      } else if (step < 1) {
-        label = `${t.toFixed(1)}s`;
-      } else if (t < 60) {
-        label = `${Math.round(t)}s`;
-      } else {
-        const m = Math.floor(t / 60);
-        const s = Math.round(t % 60);
-        label = `${m}m${s > 0 ? s + "s" : ""}`;
-      }
-
-      if (label) {
-        this.ctx.fillStyle = "#8d8d99";
-        this.ctx.fillText(label, x, effH + 11);
-      }
-    }
-  }
-
-  // 十字線 (周波数バッジ ＆ 時間秒数バッジ) の描画
-  drawCrosshairs(totalW, totalH, effH, graphW, halfGraph, audioHistoryTimes, currentScrollX, frameWidth, hover) {
-    this.ctx.save();
-    this.ctx.lineWidth = 1;
-    this.ctx.setLineDash([3, 3]);
-
-    const freq = this.yToFreq(hover.y, effH);
-    const noteName = this.freqToNearestNote(freq);
-    const labelText = `${Math.round(freq).toLocaleString()} Hz (${noteName})`;
-
-    this.ctx.font = "bold 9px ui-monospace, sans-serif";
-    const badgeW = this.ctx.measureText(labelText).width + 12;
-    const badgeH = 16;
-
-    let timePerFrame = 1 / 120;
-    if (audioHistoryTimes && audioHistoryTimes.length >= 2) {
-      timePerFrame = (audioHistoryTimes[audioHistoryTimes.length - 1] - audioHistoryTimes[0]) / (audioHistoryTimes.length - 1);
-    }
-
-    if (hover.area === "spectrogram") {
-      const panelX = totalW - SPECTRUM_PANEL_WIDTH;
-      this.ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
-
-      // 垂直線 (上下方向)
-      this.ctx.beginPath();
-      this.ctx.moveTo(hover.x, 0);
-      this.ctx.lineTo(hover.x, effH);
-      this.ctx.stroke();
-
-      // 水平線 (左右方向)
-      this.ctx.beginPath();
-      this.ctx.moveTo(LEFT_MARGIN, hover.y);
-      this.ctx.lineTo(panelX, hover.y);
-      this.ctx.stroke();
-
-      // 周波数 ＋ 音名バッジ (左端)
-      if (freq >= DATA_MIN_FREQ && freq <= DATA_MAX_FREQ && hover.y <= effH) {
-        this.ctx.setLineDash([]);
-        this.ctx.fillStyle = "rgba(18, 18, 20, 0.88)";
-        this.ctx.fillRect(LEFT_MARGIN + 2, hover.y - badgeH / 2, badgeW, badgeH);
-        this.ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
-        this.ctx.strokeRect(LEFT_MARGIN + 2, hover.y - badgeH / 2, badgeW, badgeH);
-
-        this.ctx.fillStyle = "#38bdf8";
-        this.ctx.textAlign = "left";
-        this.ctx.textBaseline = "middle";
-        this.ctx.fillText(labelText, LEFT_MARGIN + 7, hover.y);
-      }
-
-      // 時間 (秒数) バッジ (垂直線の足元)
-      const hoverFrame = (currentScrollX - halfGraph + (hover.x - LEFT_MARGIN)) / frameWidth;
-      const hoverSec = hoverFrame * timePerFrame;
-      if (hoverSec >= 0) {
-        this.ctx.setLineDash([]);
-        const timeLabel = `${hoverSec.toFixed(2)}s`;
-        const timeBadgeW = this.ctx.measureText(timeLabel).width + 10;
-
-        this.ctx.fillStyle = "rgba(18, 18, 20, 0.88)";
-        this.ctx.fillRect(hover.x - timeBadgeW / 2, effH - 18, timeBadgeW, 16);
-        this.ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
-        this.ctx.strokeRect(hover.x - timeBadgeW / 2, effH - 18, timeBadgeW, 16);
-
-        this.ctx.fillStyle = "#ffd700"; // ゴールド色で時間を表示
-        this.ctx.textAlign = "center";
-        this.ctx.textBaseline = "middle";
-        this.ctx.fillText(timeLabel, hover.x, effH - 10);
-      }
-    } else if (hover.area === "panel") {
-      const panelX = totalW - SPECTRUM_PANEL_WIDTH;
-      this.ctx.strokeStyle = "rgba(0, 229, 255, 0.55)";
-
-      // 垂直線
-      this.ctx.beginPath();
-      this.ctx.moveTo(hover.x, 0);
-      this.ctx.lineTo(hover.x, totalH);
-      this.ctx.stroke();
-
-      // 水平線
-      this.ctx.beginPath();
-      this.ctx.moveTo(panelX, hover.y);
-      this.ctx.lineTo(totalW, hover.y);
-      this.ctx.stroke();
-
-      if (freq >= DATA_MIN_FREQ && freq <= DATA_MAX_FREQ) {
-        this.ctx.setLineDash([]);
-        this.ctx.fillStyle = "rgba(16, 18, 24, 0.92)";
-        this.ctx.fillRect(panelX + 3, hover.y - badgeH / 2, badgeW, badgeH);
-        this.ctx.strokeStyle = "rgba(0, 229, 255, 0.45)";
-        this.ctx.strokeRect(panelX + 3, hover.y - badgeH / 2, badgeW, badgeH);
-
-        this.ctx.fillStyle = "#00e5ff";
-        this.ctx.textAlign = "left";
-        this.ctx.textBaseline = "middle";
-        this.ctx.fillText(labelText, panelX + 8, hover.y);
-      }
-    }
-
-    this.ctx.restore();
-  }
-
-  drawFrequencyFilters(h, graphW, filterManager) {
-    if (!filterManager.hasActiveFilters()) return;
-
-    this.ctx.save();
-    const handleW = 34;
-    const handleH = 8;
-    const centerX = LEFT_MARGIN + graphW / 2;
-
-    for (const f of filterManager.filters) {
-      const yHigh = this.freqToY(f.maxFreq, h);
-      const yLow = this.freqToY(f.minFreq, h);
-
-      const topY = Math.min(yHigh, yLow);
-      const bottomY = Math.max(yHigh, yLow);
-      const bandHeight = bottomY - topY;
-
-      this.ctx.fillStyle = f.color + "33";
-      this.ctx.fillRect(LEFT_MARGIN, topY, graphW, bandHeight);
-
-      this.ctx.strokeStyle = f.color;
-      this.ctx.lineWidth = 1.5;
-
-      this.ctx.beginPath();
-      this.ctx.moveTo(LEFT_MARGIN, topY);
-      this.ctx.lineTo(LEFT_MARGIN + graphW, topY);
-      this.ctx.stroke();
-
-      this.ctx.beginPath();
-      this.ctx.moveTo(LEFT_MARGIN, bottomY);
-      this.ctx.lineTo(LEFT_MARGIN + graphW, bottomY);
-      this.ctx.stroke();
-
-      this.ctx.fillStyle = f.color;
-      this.ctx.fillRect(centerX - handleW / 2, topY - handleH / 2, handleW, handleH);
-      this.ctx.strokeStyle = "#ffffff";
-      this.ctx.lineWidth = 1;
-      this.ctx.strokeRect(centerX - handleW / 2, topY - handleH / 2, handleW, handleH);
-
-      this.ctx.fillStyle = f.color;
-      this.ctx.fillRect(centerX - handleW / 2, bottomY - handleH / 2, handleW, handleH);
-      this.ctx.strokeStyle = "#ffffff";
-      this.ctx.lineWidth = 1;
-      this.ctx.strokeRect(centerX - handleW / 2, bottomY - handleH / 2, handleW, handleH);
-
-      const gainLabel = ` (${f.gain || 100}%)`;
-      this.ctx.fillStyle = "#ffffff";
-      this.ctx.font = "bold 9px ui-monospace, sans-serif";
-      this.ctx.textAlign = "left";
-      this.ctx.textBaseline = "middle";
-      this.ctx.fillText(`${Math.round(f.maxFreq)} Hz${gainLabel}`, centerX + handleW / 2 + 6, topY);
-      this.ctx.fillText(`${Math.round(f.minFreq)} Hz${gainLabel}`, centerX + handleW / 2 + 6, bottomY);
-    }
-
-    this.ctx.restore();
-  }
-
+  // 安定した有声音のみを選別して滑らかに描画 (無声音・突発ノイズの線を徹底除去)
   drawPitchTrack(h, graphW, halfGraph, pitchHistory, currentScrollX, frameWidth) {
     if (!pitchHistory || pitchHistory.length === 0) return;
 
@@ -491,6 +234,7 @@ export class SpectrogramRenderer {
     let currentSegment = [];
     let prevFreq = null;
 
+    // 連続した有声音セグメントの抽出
     for (let f = startFrame; f < endFrame; f++) {
       const pitch = pitchHistory[f];
       const x = LEFT_MARGIN + halfGraph + (f * frameWidth - currentScrollX);
@@ -498,23 +242,26 @@ export class SpectrogramRenderer {
       if (pitch && pitch >= this.viewMinFreq && pitch <= this.viewMaxFreq) {
         const y = this.freqToY(pitch, h);
 
-        if (prevFreq && Math.abs(Math.log2(pitch / prevFreq)) >= 0.5) {
-          if (currentSegment.length > 0) {
+        // 周波数の跳躍（半オクターブ以上の不自然な飛び）がある場合は別セグメントに分割
+        if (prevFreq && Math.abs(Math.log2(pitch / prevFreq)) >= 0.45) {
+          // 4フレーム（約33ms）以上継続した安定した有声音のみ保存
+          if (currentSegment.length >= 4) {
             segments.push(currentSegment);
-            currentSegment = [];
           }
+          currentSegment = [];
         }
         currentSegment.push({ x, y });
         prevFreq = pitch;
       } else {
-        if (currentSegment.length > 0) {
+        // 無声音・無音
+        if (currentSegment.length >= 4) {
           segments.push(currentSegment);
-          currentSegment = [];
         }
+        currentSegment = [];
         prevFreq = null;
       }
     }
-    if (currentSegment.length > 0) {
+    if (currentSegment.length >= 4) {
       segments.push(currentSegment);
     }
 
@@ -528,15 +275,7 @@ export class SpectrogramRenderer {
     const buildSmoothPath = () => {
       this.ctx.beginPath();
       segments.forEach((pts) => {
-        if (pts.length === 1) {
-          this.ctx.arc(pts[0].x, pts[0].y, 1.5, 0, Math.PI * 2);
-          return;
-        }
-        if (pts.length === 2) {
-          this.ctx.moveTo(pts[0].x, pts[0].y);
-          this.ctx.lineTo(pts[1].x, pts[1].y);
-          return;
-        }
+        if (pts.length < 2) return;
 
         this.ctx.moveTo(pts[0].x, pts[0].y);
         for (let i = 0; i < pts.length - 1; i++) {
@@ -555,6 +294,7 @@ export class SpectrogramRenderer {
       });
     };
 
+    // ダークアウトライン
     buildSmoothPath();
     this.ctx.strokeStyle = "rgba(9, 9, 11, 0.85)";
     this.ctx.lineWidth = 3.6;
@@ -562,6 +302,7 @@ export class SpectrogramRenderer {
     this.ctx.lineJoin = "round";
     this.ctx.stroke();
 
+    // 鮮明なネオンシアン
     buildSmoothPath();
     this.ctx.strokeStyle = "#00f5ff";
     this.ctx.lineWidth = 1.8;
@@ -692,12 +433,21 @@ export class SpectrogramRenderer {
           this.ctx.textBaseline = "middle";
           this.ctx.fillText(noteName, blackKeyW - 3, Math.round(yTop + keyH / 2));
         }
-      } else if (!showAllLabels && noteInOct === 0 && keyH >= 2.5) {
+      } else if (!showAllLabels && noteInOct === 0) {
+        const yCenter = Math.round((yTop + yBottom) / 2);
+
+        this.ctx.strokeStyle = "#38bdf8";
+        this.ctx.lineWidth = 1.2;
+        this.ctx.beginPath();
+        this.ctx.moveTo(KEYBOARD_WIDTH, yCenter);
+        this.ctx.lineTo(KEYBOARD_WIDTH + 4, yCenter);
+        this.ctx.stroke();
+
         this.ctx.fillStyle = "#38bdf8";
-        this.ctx.font = "bold 9px ui-monospace, 'Segoe UI', sans-serif";
+        this.ctx.font = "bold 9px ui-monospace, sans-serif";
         this.ctx.textAlign = "left";
         this.ctx.textBaseline = "middle";
-        this.ctx.fillText(`C${octave}`, KEYBOARD_WIDTH + 3, Math.round(yTop + keyH / 2));
+        this.ctx.fillText(`C${octave}`, KEYBOARD_WIDTH + 6, yCenter);
       }
     }
 
@@ -707,6 +457,238 @@ export class SpectrogramRenderer {
     this.ctx.moveTo(KEYBOARD_WIDTH, 0);
     this.ctx.lineTo(KEYBOARD_WIDTH, h);
     this.ctx.stroke();
+  }
+
+  drawTimeAxis(totalW, totalH, effH, graphW, halfGraph, audioHistoryTimes, currentScrollX, frameWidth) {
+    const panelX = totalW - SPECTRUM_PANEL_WIDTH;
+
+    this.ctx.fillStyle = "#141416";
+    this.ctx.fillRect(0, effH, panelX, TIME_AXIS_HEIGHT);
+
+    this.ctx.strokeStyle = "#27272a";
+    this.ctx.lineWidth = 1;
+    this.ctx.beginPath();
+    this.ctx.moveTo(0, effH);
+    this.ctx.lineTo(panelX, effH);
+    this.ctx.stroke();
+
+    let timePerFrame = 1 / 120;
+    if (audioHistoryTimes && audioHistoryTimes.length >= 2) {
+      timePerFrame = (audioHistoryTimes[audioHistoryTimes.length - 1] - audioHistoryTimes[0]) / (audioHistoryTimes.length - 1);
+    }
+
+    const pxPerSec = frameWidth / timePerFrame;
+    if (pxPerSec <= 0) return;
+
+    const tStart = ((currentScrollX - halfGraph) / frameWidth) * timePerFrame;
+    const tEnd = ((currentScrollX + halfGraph) / frameWidth) * timePerFrame;
+
+    const stepCandidates = [0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+    const targetPxInterval = 75;
+    const idealStep = targetPxInterval / pxPerSec;
+    let step = stepCandidates[stepCandidates.length - 1];
+    for (const c of stepCandidates) {
+      if (c >= idealStep) {
+        step = c;
+        break;
+      }
+    }
+
+    const firstTick = Math.floor(tStart / step) * step;
+
+    this.ctx.font = "bold 9px ui-monospace, sans-serif";
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "middle";
+
+    for (let t = firstTick; t <= tEnd + step; t += step) {
+      const frameIdx = t / timePerFrame;
+      const x = LEFT_MARGIN + halfGraph + (frameIdx * frameWidth - currentScrollX);
+
+      if (x < LEFT_MARGIN || x > panelX) continue;
+
+      this.ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
+      this.ctx.setLineDash([2, 4]);
+      this.ctx.beginPath();
+      this.ctx.moveTo(x, 0);
+      this.ctx.lineTo(x, effH);
+      this.ctx.stroke();
+      this.ctx.setLineDash([]);
+
+      this.ctx.strokeStyle = "#71717a";
+      this.ctx.beginPath();
+      this.ctx.moveTo(x, effH);
+      this.ctx.lineTo(x, effH + 4);
+      this.ctx.stroke();
+
+      let label = "";
+      if (t < 0) {
+        label = "";
+      } else if (step < 0.1) {
+        label = `${t.toFixed(2)}s`;
+      } else if (step < 1) {
+        label = `${t.toFixed(1)}s`;
+      } else if (t < 60) {
+        label = `${Math.round(t)}s`;
+      } else {
+        const m = Math.floor(t / 60);
+        const s = Math.round(t % 60);
+        label = `${m}m${s > 0 ? s + "s" : ""}`;
+      }
+
+      if (label) {
+        this.ctx.fillStyle = "#8d8d99";
+        this.ctx.fillText(label, x, effH + 11);
+      }
+    }
+  }
+
+  drawCrosshairs(totalW, totalH, effH, graphW, halfGraph, audioHistoryTimes, currentScrollX, frameWidth, hover) {
+    this.ctx.save();
+    this.ctx.lineWidth = 1;
+    this.ctx.setLineDash([3, 3]);
+
+    const freq = this.yToFreq(hover.y, effH);
+    const noteName = this.freqToNearestNote(freq);
+    const labelText = `${Math.round(freq).toLocaleString()} Hz (${noteName})`;
+
+    this.ctx.font = "bold 9px ui-monospace, sans-serif";
+    const badgeW = this.ctx.measureText(labelText).width + 12;
+    const badgeH = 16;
+
+    let timePerFrame = 1 / 120;
+    if (audioHistoryTimes && audioHistoryTimes.length >= 2) {
+      timePerFrame = (audioHistoryTimes[audioHistoryTimes.length - 1] - audioHistoryTimes[0]) / (audioHistoryTimes.length - 1);
+    }
+
+    if (hover.area === "spectrogram") {
+      const panelX = totalW - SPECTRUM_PANEL_WIDTH;
+      this.ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(hover.x, 0);
+      this.ctx.lineTo(hover.x, effH);
+      this.ctx.stroke();
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(LEFT_MARGIN, hover.y);
+      this.ctx.lineTo(panelX, hover.y);
+      this.ctx.stroke();
+
+      if (freq >= DATA_MIN_FREQ && freq <= DATA_MAX_FREQ && hover.y <= effH) {
+        this.ctx.setLineDash([]);
+        this.ctx.fillStyle = "rgba(18, 18, 20, 0.88)";
+        this.ctx.fillRect(LEFT_MARGIN + 2, hover.y - badgeH / 2, badgeW, badgeH);
+        this.ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+        this.ctx.strokeRect(LEFT_MARGIN + 2, hover.y - badgeH / 2, badgeW, badgeH);
+
+        this.ctx.fillStyle = "#38bdf8";
+        this.ctx.textAlign = "left";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText(labelText, LEFT_MARGIN + 7, hover.y);
+      }
+
+      const hoverFrame = (currentScrollX - halfGraph + (hover.x - LEFT_MARGIN)) / frameWidth;
+      const hoverSec = hoverFrame * timePerFrame;
+      if (hoverSec >= 0) {
+        this.ctx.setLineDash([]);
+        const timeLabel = `${hoverSec.toFixed(2)}s`;
+        const timeBadgeW = this.ctx.measureText(timeLabel).width + 10;
+
+        this.ctx.fillStyle = "rgba(18, 18, 20, 0.88)";
+        this.ctx.fillRect(hover.x - timeBadgeW / 2, effH - 18, timeBadgeW, 16);
+        this.ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+        this.ctx.strokeRect(hover.x - timeBadgeW / 2, effH - 18, timeBadgeW, 16);
+
+        this.ctx.fillStyle = "#ffd700";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText(timeLabel, hover.x, effH - 10);
+      }
+    } else if (hover.area === "panel") {
+      const panelX = totalW - SPECTRUM_PANEL_WIDTH;
+      this.ctx.strokeStyle = "rgba(0, 229, 255, 0.55)";
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(hover.x, 0);
+      this.ctx.lineTo(hover.x, totalH);
+      this.ctx.stroke();
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(panelX, hover.y);
+      this.ctx.lineTo(totalW, hover.y);
+      this.ctx.stroke();
+
+      if (freq >= DATA_MIN_FREQ && freq <= DATA_MAX_FREQ) {
+        this.ctx.setLineDash([]);
+        this.ctx.fillStyle = "rgba(16, 18, 24, 0.92)";
+        this.ctx.fillRect(panelX + 3, hover.y - badgeH / 2, badgeW, badgeH);
+        this.ctx.strokeStyle = "rgba(0, 229, 255, 0.45)";
+        this.ctx.strokeRect(panelX + 3, hover.y - badgeH / 2, badgeW, badgeH);
+
+        this.ctx.fillStyle = "#00e5ff";
+        this.ctx.textAlign = "left";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText(labelText, panelX + 8, hover.y);
+      }
+    }
+
+    this.ctx.restore();
+  }
+
+  drawFrequencyFilters(h, graphW, filterManager) {
+    if (!filterManager.hasActiveFilters()) return;
+
+    this.ctx.save();
+    const handleW = 34;
+    const handleH = 8;
+    const centerX = LEFT_MARGIN + graphW / 2;
+
+    for (const f of filterManager.filters) {
+      const yHigh = this.freqToY(f.maxFreq, h);
+      const yLow = this.freqToY(f.minFreq, h);
+
+      const topY = Math.min(yHigh, yLow);
+      const bottomY = Math.max(yHigh, yLow);
+      const bandHeight = bottomY - topY;
+
+      this.ctx.fillStyle = f.color + "33";
+      this.ctx.fillRect(LEFT_MARGIN, topY, graphW, bandHeight);
+
+      this.ctx.strokeStyle = f.color;
+      this.ctx.lineWidth = 1.5;
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(LEFT_MARGIN, topY);
+      this.ctx.lineTo(LEFT_MARGIN + graphW, topY);
+      this.ctx.stroke();
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(LEFT_MARGIN, bottomY);
+      this.ctx.lineTo(LEFT_MARGIN + graphW, bottomY);
+      this.ctx.stroke();
+
+      this.ctx.fillStyle = f.color;
+      this.ctx.fillRect(centerX - handleW / 2, topY - handleH / 2, handleW, handleH);
+      this.ctx.strokeStyle = "#ffffff";
+      this.ctx.lineWidth = 1;
+      this.ctx.strokeRect(centerX - handleW / 2, topY - handleH / 2, handleW, handleH);
+
+      this.ctx.fillStyle = f.color;
+      this.ctx.fillRect(centerX - handleW / 2, bottomY - handleH / 2, handleW, handleH);
+      this.ctx.strokeStyle = "#ffffff";
+      this.ctx.lineWidth = 1;
+      this.ctx.strokeRect(centerX - handleW / 2, bottomY - handleH / 2, handleW, handleH);
+
+      const gainLabel = ` (${f.gain || 100}%)`;
+      this.ctx.fillStyle = "#ffffff";
+      this.ctx.font = "bold 9px ui-monospace, sans-serif";
+      this.ctx.textAlign = "left";
+      this.ctx.textBaseline = "middle";
+      this.ctx.fillText(`${Math.round(f.maxFreq)} Hz${gainLabel}`, centerX + handleW / 2 + 6, topY);
+      this.ctx.fillText(`${Math.round(f.minFreq)} Hz${gainLabel}`, centerX + handleW / 2 + 6, bottomY);
+    }
+
+    this.ctx.restore();
   }
 
   drawSpectrumProfile(totalW, h, activeSpectrum, sampleMap, imgH, fundamentalPitch, sampleRate) {
