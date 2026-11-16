@@ -8,6 +8,19 @@ import { initModals, openFilterModal, openSaveConfirmModal, openCloseConfirmModa
 
 // DOM 要素
 const statusText = document.getElementById("statusText");
+let statusExportText = document.getElementById("statusExportText");
+
+// statusExportText が HTML に存在しない場合でも安全に自動生成して配置
+if (!statusExportText && statusText) {
+  const statusBar = document.getElementById("statusBar") || statusText.parentElement;
+  if (statusBar) {
+    statusExportText = document.createElement("div");
+    statusExportText.id = "statusExportText";
+    statusExportText.className = "status-right";
+    statusBar.appendChild(statusExportText);
+  }
+}
+
 const spectrogramArea = document.getElementById("spectrogramArea");
 const canvas = document.getElementById("spectrogramCanvas");
 const scrollContainer = document.getElementById("scrollContainer");
@@ -132,28 +145,88 @@ async function handleOpen() {
       const res = await window.__TAURI__.core.invoke("pick_audio_file");
       if (res) {
         const [filePath, fileName] = res;
-        statusText.textContent = `読み込み中: ${fileName}...`;
-        const rawResponse = await window.__TAURI__.core.invoke("read_audio_file", { path: filePath });
+
+        if (statusText) {
+          statusText.textContent = `読み込み中 (${fileName}): [1/3] 音声をデコード中... 0%`;
+        }
+
+        const rustStart = performance.now();
+        // Tauri v2 の IPC Channel を確実に生成
+        const channel = new window.__TAURI__.core.Channel();
+        channel.onmessage = (percent) => {
+          if (statusText) {
+            statusText.textContent = `読み込み中 (${fileName}): [1/3] 音声をデコード中... ${percent}%`;
+          }
+        };
+
+        const rawResponse = await window.__TAURI__.core.invoke("read_audio_file", {
+          path: filePath,
+          onProgress: channel
+        });
+
+        const rustDuration = Math.round(performance.now() - rustStart);
         const arrayBuffer = (rawResponse instanceof ArrayBuffer) ? rawResponse : rawResponse.buffer;
-        await loadAudio(arrayBuffer, fileName, filePath);
+
+        await loadAudio(arrayBuffer, fileName, filePath, rustDuration);
       }
       return;
-    } catch (e) {}
+    } catch (e) {
+      if (statusText) statusText.textContent = `読み込みエラー: ${e}`;
+      return;
+    }
   }
   fileInput.value = ""; fileInput.click();
 }
 document.getElementById("actionOpen").addEventListener("click", handleOpen);
 
-async function loadAudio(arrayBuffer, name, path) {
+async function loadAudio(arrayBuffer, name, path, rustDuration = null) {
   if (!isValidAudioFile(name)) {
-    statusText.textContent = "非対応の形式です (.wav, .flac, .mp3, .ogg, .m4a のみ対応)";
+    if (statusText) statusText.textContent = "非対応の形式です (.wav, .flac, .mp3, .ogg, .m4a のみ対応)";
     return;
   }
-  const res = await editorManager.loadAudioFromBuffer(arrayBuffer, name, path, currentScrollX, frameWidth, (p) => {
-    statusText.textContent = `高精度FFT解析中 (${name}): ${p}%`;
+
+  const overallStart = performance.now();
+
+  const res = await editorManager.loadAudioFromBuffer(
+    arrayBuffer,
+    name,
+    path,
+    currentScrollX,
+    frameWidth,
+    (info) => {
+      if (info.phase === "decoding") {
+        if (statusText) statusText.textContent = `読み込み中 (${name}): [2/3] 波形データを展開中...`;
+      } else if (info.phase === "analyzing") {
+        if (statusText) statusText.textContent = `読み込み中 (${name}): [3/3] スペクトル解析中: ${info.percent}%`;
+      }
+    }
+  );
+
+  currentScrollX = res.scrollX;
+  targetScrollX = res.scrollX;
+  frameWidth = res.frameWidth;
+  renderView();
+
+  const totalTime = Math.round(performance.now() - overallStart + (rustDuration || 0));
+  const perf = res.perfData || {};
+
+  // コンソールに詳細なパフォーマンステーブルを出力
+  console.group(`%c[PERF PROFILE] 音声読み込み完了: ${name}`, "color: #04d361; font-weight: bold; font-size: 1.05em;");
+  console.table({
+    "Phase 1: Rust ファイルデコード": rustDuration !== null ? `${rustDuration} ms` : "N/A (ブラウザ直接)",
+    "Phase 2: 波形データ展開 (WebAudio)": `${perf.decodeMs || 0} ms`,
+    "Phase 3: FFT & ピッチ解析": `${perf.fftMs || 0} ms`,
+    "総所要時間": `${totalTime} ms`
   });
-  currentScrollX = res.scrollX; targetScrollX = res.scrollX; frameWidth = res.frameWidth; renderView();
-  statusText.textContent = `解析完了: ${name} (Spaceキーで再生)`;
+  console.log(`音声長: ${(perf.durationSec || 0).toFixed(2)}s | サンプルレート: ${perf.sampleRate || 0}Hz | 総ステップ数: ${perf.totalSteps || 0}`);
+  console.groupEnd();
+
+  const rustSummary = rustDuration !== null ? `デコード: ${(rustDuration / 1000).toFixed(1)}s, ` : "";
+  const decodeSummary = `展開: ${((perf.decodeMs || 0) / 1000).toFixed(1)}s, `;
+  const fftSummary = `解析: ${((perf.fftMs || 0) / 1000).toFixed(1)}s`;
+  if (statusText) {
+    statusText.textContent = `解析完了: ${name} (${rustSummary}${decodeSummary}${fftSummary} / 合計: ${(totalTime / 1000).toFixed(1)}s)`;
+  }
 }
 
 fileInput.addEventListener("change", async (e) => {
@@ -169,13 +242,13 @@ function handleSave(isSaveAs) {
   const actualSaveAs = isSaveAs || !active.filePath;
 
   const execute = async (applyFilter) => {
-    statusText.textContent = "保存中...";
+    if (statusText) statusText.textContent = "保存中...";
     if (actualSaveAs) {
       const savedName = await editorManager.saveFileAs(applyFilter);
-      statusText.textContent = savedName ? `保存完了: ${savedName}` : "保存をキャンセルしました";
+      if (statusText) statusText.textContent = savedName ? `保存完了: ${savedName}` : "保存をキャンセルしました";
     } else {
       const ok = await editorManager.saveFile(applyFilter);
-      statusText.textContent = ok ? `上書き保存完了: ${active.name}` : "上書き保存に失敗しました";
+      if (statusText) statusText.textContent = ok ? `上書き保存完了: ${active.name}` : "上書き保存に失敗しました";
     }
   };
 
@@ -183,7 +256,7 @@ function handleSave(isSaveAs) {
     openSaveConfirmModal({
       onSaveWithFilter: () => execute(true),
       onSaveWithoutFilter: () => execute(false),
-      onCancel: () => { statusText.textContent = "保存をやめました"; }
+      onCancel: () => { if (statusText) statusText.textContent = "保存をやめました"; }
     });
   } else {
     execute(false);
@@ -193,14 +266,58 @@ function handleSave(isSaveAs) {
 actionSave.addEventListener("click", () => handleSave(false));
 actionSaveAs.addEventListener("click", () => handleSave(true));
 
-// 動画ファイル出力 (.mp4) - スペクトル同期再描画 ＆ 完全消音
-actionExportVideo.addEventListener("click", () => {
+// 動画ファイル出力 (.mp4) - 事前に保存先を指定してからエンコード
+actionExportVideo.addEventListener("click", async () => {
   const active = editorManager.activeEditor;
   if (!active || (audio.history.length === 0 && !active.pcmData)) return;
 
-  exportProgressBar.style.width = "0%";
-  exportStatusText.textContent = "準備中...";
-  videoExportModal.style.display = "flex";
+  const baseName = active.name.replace(/\.[^/.]+$/, "") + ".mp4";
+  let targetFilePath = null;
+  let targetFileName = baseName;
+  let fileHandle = null;
+
+  // 1. 事前に保存先を指定
+  if (window.__TAURI__?.core?.invoke) {
+    try {
+      const res = await window.__TAURI__.core.invoke("pick_save_video_path", {
+        defaultName: baseName
+      });
+      if (!res) {
+        if (statusText) statusText.textContent = "動画出力をキャンセルしました";
+        return;
+      }
+      targetFilePath = res[0];
+      targetFileName = res[1];
+    } catch (err) {
+      console.warn("Tauri pick_save_video_path failed:", err);
+      if (statusText) statusText.textContent = "保存先の指定に失敗しました: " + err;
+      return;
+    }
+  } else if (window.showSaveFilePicker) {
+    try {
+      fileHandle = await window.showSaveFilePicker({
+        suggestedName: baseName,
+        types: [{
+          description: "MP4 Video",
+          accept: { "video/mp4": [".mp4"] }
+        }]
+      });
+      targetFileName = fileHandle.name;
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        console.warn("showSaveFilePicker error:", err);
+      }
+      if (statusText) statusText.textContent = "動画出力をキャンセルしました";
+      return;
+    }
+  }
+
+  // 2. 保存先が確定したらエンコードを開始
+  if (exportProgressBar) exportProgressBar.style.width = "0%";
+  if (exportStatusText) exportStatusText.textContent = "準備中...";
+  if (statusExportText) statusExportText.textContent = `動画出力準備中 (${targetFileName})...`;
+  if (statusText) statusText.textContent = `動画出力中: ${targetFileName}`;
+  if (videoExportModal) videoExportModal.style.display = "flex";
 
   // 先頭 (0.0s) からの描画に初期化
   const maxScroll = Math.max(0, (audio.history.length - 1) * frameWidth);
@@ -210,51 +327,80 @@ actionExportVideo.addEventListener("click", () => {
 
   videoExporter.startExport({
     onProgress: (progress, currentSec, totalDuration) => {
-      // 1. スペクトル画面を音声の進捗に合わせて同期スクロール再描画 (映像を動かす！)
       currentScrollX = progress * maxScroll;
       targetScrollX = currentScrollX;
       renderView();
 
-      // 2. モーダルのプログレスバーを更新
       const percent = Math.min(100, Math.round(progress * 100));
-      exportProgressBar.style.width = `${percent}%`;
-      exportStatusText.textContent = `進行状況: ${percent}% (${currentSec.toFixed(1)}s / ${totalDuration.toFixed(1)}s)`;
+      if (exportProgressBar) exportProgressBar.style.width = `${percent}%`;
+      const progressText = `${percent}% (${currentSec.toFixed(1)}s / ${totalDuration.toFixed(1)}s)`;
+      if (exportStatusText) exportStatusText.textContent = `進行状況: ${progressText}`;
+      if (statusExportText) statusExportText.textContent = `動画出力中: ${progressText}`;
     },
     onComplete: async (blob) => {
-      videoExportModal.style.display = "none";
-      statusText.textContent = "動画ファイルの保存先を選択してください...";
+      if (videoExportModal) videoExportModal.style.display = "none";
+      if (statusText) statusText.textContent = `動画ファイルを書き込み中: ${targetFileName}...`;
+      if (statusExportText) statusExportText.textContent = "動画保存中...";
 
-      const baseName = active.name.replace(/\.[^/.]+$/, "") + ".mp4";
       const arrayBuffer = await blob.arrayBuffer();
 
       try {
-        if (window.__TAURI__?.core?.invoke) {
-          const res = await window.__TAURI__.core.invoke("save_video_file_as", {
-            defaultName: baseName,
+        if (targetFilePath && window.__TAURI__?.core?.invoke) {
+          await window.__TAURI__.core.invoke("save_video_file", {
+            path: targetFilePath,
             data: new Uint8Array(arrayBuffer)
           });
-          if (res) {
-            statusText.textContent = `動画を出力しました: ${res[1]}`;
-            // 完了後は先頭に戻す
-            currentScrollX = 0; targetScrollX = 0; renderView();
-            return;
-          }
+          if (statusText) statusText.textContent = `動画を出力しました: ${targetFileName}`;
+        } else if (fileHandle) {
+          const writable = await fileHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          if (statusText) statusText.textContent = `動画を出力しました: ${targetFileName}`;
+        } else {
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = targetFileName;
+          a.click();
+          if (statusText) statusText.textContent = `動画をダウンロードしました: ${targetFileName}`;
+        }
+
+        if (statusExportText) {
+          statusExportText.textContent = "動画出力完了";
+          setTimeout(() => {
+            if (statusExportText && statusExportText.textContent === "動画出力完了") {
+              statusExportText.textContent = "";
+            }
+          }, 5000);
         }
       } catch (err) {
-        console.warn("Native video save fallback:", err);
+        console.error("Save video failed:", err);
+        if (statusText) statusText.textContent = `動画保存エラー: ${err.message || err}`;
+        if (statusExportText) {
+          statusExportText.textContent = "動画保存失敗";
+          setTimeout(() => {
+            if (statusExportText && statusExportText.textContent === "動画保存失敗") {
+              statusExportText.textContent = "";
+            }
+          }, 5000);
+        }
+      } finally {
+        currentScrollX = 0;
+        targetScrollX = 0;
+        renderView();
       }
-
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = baseName;
-      a.click();
-      statusText.textContent = `動画をダウンロードしました: ${baseName}`;
-      currentScrollX = 0; targetScrollX = 0; renderView();
     },
     onError: (err) => {
-      videoExportModal.style.display = "none";
+      if (videoExportModal) videoExportModal.style.display = "none";
       alert("動画の出力に失敗しました: " + err.message);
-      statusText.textContent = "動画出力エラー: " + err.message;
+      if (statusText) statusText.textContent = "動画出力エラー: " + err.message;
+      if (statusExportText) {
+        statusExportText.textContent = "動画出力エラー";
+        setTimeout(() => {
+          if (statusExportText && statusExportText.textContent === "動画出力エラー") {
+            statusExportText.textContent = "";
+          }
+        }, 5000);
+      }
       renderView();
     }
   });
@@ -262,8 +408,16 @@ actionExportVideo.addEventListener("click", () => {
 
 btnCancelExportVideo.addEventListener("click", () => {
   videoExporter.cancel();
-  videoExportModal.style.display = "none";
-  statusText.textContent = "動画の出力を中止しました";
+  if (videoExportModal) videoExportModal.style.display = "none";
+  if (statusText) statusText.textContent = "動画の出力を中止しました";
+  if (statusExportText) {
+    statusExportText.textContent = "動画出力中止";
+    setTimeout(() => {
+      if (statusExportText && statusExportText.textContent === "動画出力中止") {
+        statusExportText.textContent = "";
+      }
+    }, 4000);
+  }
   currentScrollX = 0;
   targetScrollX = 0;
   renderView();
@@ -284,11 +438,11 @@ document.getElementById("actionClose").addEventListener("click", handleClose);
 function handleAddFilter() {
   filterManager.addDefaultFilter(); 
   renderView(); 
-  statusText.textContent = "周波数フィルターを設置しました (200Hz〜500Hz, 100%)";
+  if (statusText) statusText.textContent = "周波数フィルターを設置しました (200Hz〜500Hz, 100%)";
 }
 document.getElementById("actionAddFilter").addEventListener("click", handleAddFilter);
 document.getElementById("actionClearFilters").addEventListener("click", () => {
-  filterManager.clearAll(); renderView(); statusText.textContent = "周波数フィルターを一括削除しました";
+  filterManager.clearAll(); renderView(); if (statusText) statusText.textContent = "周波数フィルターを一括削除しました";
 });
 document.getElementById("actionManageFilters").addEventListener("click", () => {
   openFilterModal(filterManager, () => renderView());
@@ -311,11 +465,11 @@ attachAction("actionZoomInX", () => zoomTime(1.3));
 attachAction("actionZoomOutX", () => zoomTime(1 / 1.3));
 attachAction("actionZoomInY", () => { renderer.zoom(cssHeight / 2, -180, cssHeight); renderView(); });
 attachAction("actionZoomOutY", () => { renderer.zoom(cssHeight / 2, 180, cssHeight); renderView(); });
-attachAction("actionGainUp", () => { statusText.textContent = `カラー感度: ${renderer.adjustColorGain(-150)}%`; renderView(); });
-attachAction("actionGainDown", () => { statusText.textContent = `カラー感度: ${renderer.adjustColorGain(150)}%`; renderView(); });
+attachAction("actionGainUp", () => { if (statusText) statusText.textContent = `カラー感度: ${renderer.adjustColorGain(-150)}%`; renderView(); });
+attachAction("actionGainDown", () => { if (statusText) statusText.textContent = `カラー感度: ${renderer.adjustColorGain(150)}%`; renderView(); });
 attachAction("actionResetZoom", () => {
   frameWidth = DEFAULT_FRAME_WIDTH; renderer.viewMinFreq = DEFAULT_MIN_FREQ; renderer.viewMaxFreq = DEFAULT_MAX_FREQ;
-  renderer.colorGain = 1.0; renderer.rebuildBakedLUT(); renderView(); statusText.textContent = "リセットしました";
+  renderer.colorGain = 1.0; renderer.rebuildBakedLUT(); renderView(); if (statusText) statusText.textContent = "リセットしました";
 });
 
 // 録音処理
@@ -324,7 +478,7 @@ async function toggleRecording() {
     audio.stopMic();
     centerMicBtn.innerHTML = "🎙️ マイク録音開始";
     centerMicBtn.classList.remove("recording");
-    statusText.textContent = "録音停止 (Spaceキーで中央位置から再生)";
+    if (statusText) statusText.textContent = "録音停止 (Spaceキーで中央位置から再生)";
     await editorManager.saveCurrentEditorState(currentScrollX, frameWidth);
     renderView();
     return;
@@ -342,10 +496,10 @@ async function toggleRecording() {
     centerMicBtn.innerHTML = "⏹️ 録音停止";
     centerMicBtn.classList.add("recording");
     updateMenuState();
-    statusText.textContent = "録音中... (Spaceキーまたはメニューから停止)";
+    if (statusText) statusText.textContent = "録音中... (Spaceキーまたはメニューから停止)";
     await audio.startMic(() => renderView());
   } catch (err) {
-    statusText.textContent = "マイクへのアクセス失敗: " + err.message;
+    if (statusText) statusText.textContent = "マイクへのアクセス失敗: " + err.message;
   }
 }
 centerMicBtn.addEventListener("click", toggleRecording);
@@ -461,15 +615,19 @@ spectrogramArea.addEventListener("wheel", (e) => {
   const mouseY = e.clientY - rect.top;
 
   if (mouseX <= LEFT_MARGIN) {
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey) statusText.textContent = `カラー感度: ${renderer.adjustColorGain(e.deltaY)}%`;
-    else if (e.ctrlKey || e.metaKey) renderer.zoom(mouseY, e.deltaY, cssHeight);
-    else renderer.pan(e.deltaY, cssHeight);
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
+      if (statusText) statusText.textContent = `カラー感度: ${renderer.adjustColorGain(e.deltaY)}%`;
+    } else if (e.ctrlKey || e.metaKey) {
+      renderer.zoom(mouseY, e.deltaY, cssHeight);
+    } else {
+      renderer.pan(e.deltaY, cssHeight);
+    }
     renderView();
     return;
   }
 
   if (mouseX >= cssWidth - SPECTRUM_PANEL_WIDTH && (e.ctrlKey || e.metaKey)) {
-    statusText.textContent = `スペクトル波形縮尺: ${renderer.adjustProfileScale(e.deltaY)}%`;
+    if (statusText) statusText.textContent = `スペクトル波形縮尺: ${renderer.adjustProfileScale(e.deltaY)}%`;
     renderView();
     return;
   }
@@ -524,7 +682,7 @@ window.addEventListener("keydown", (e) => {
       toggleRecording();
     } else if (audio.isPlaying) {
       audio.stopPlayback();
-      statusText.textContent = "一時停止";
+      if (statusText) statusText.textContent = "一時停止";
       renderView();
     } else {
       const maxScroll = Math.max(1, (audio.history.length - 1) * frameWidth);
@@ -542,12 +700,12 @@ window.addEventListener("keydown", (e) => {
           renderView();
         },
         () => {
-          statusText.textContent = "再生終了";
+          if (statusText) statusText.textContent = "再生終了";
           renderView();
         }
       );
 
-      statusText.textContent = `再生中 (${filterManager.hasActiveFilters() ? "フィルター適用" : "全帯域"})`;
+      if (statusText) statusText.textContent = `再生中 (${filterManager.hasActiveFilters() ? "フィルター適用" : "全帯域"})`;
     }
   }
 });
